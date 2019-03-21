@@ -14,17 +14,17 @@
 
 'use strict';
 
-const FabricClient = require('fabric-client');
-
 const Version = require('../../comm/version.js');
 const FabricNetwork = require('./fabricNetwork.js');
-const util = require('../../comm/util.js');
 const TxStatus = require('../../comm/transaction.js');
 const BlockchainInterface = require('../../comm/blockchain-interface.js');
 
+const util = require('../../comm/util.js');
+const fabricUtil = require('./fabric-utils.js');
+const networkUtil = require('./fabric-network-util.js');
+const solidityUtil = require('./fabric-solidity-utils.js');
+
 const fs = require('fs');
-const child_process = require('child_process');
-const tmp = require('tmp');
 
 const logger = util.getLogger('adapters/fabric-ccp');
 const config = require('../../comm/config-util.js').getConfig();
@@ -113,6 +113,9 @@ const config = require('../../comm/config-util.js').getConfig();
  *           grouped by channels and organizations: Channel -> Chaincode -> Org -> Peers
  * @property {Map<string, EventSource[]>} channelEventSourcesCache Contains the list of event sources for every channel.
  * @property {Map<string, string[]>} randomTargetOrdererCache Contains the list of target orderers of channels.
+ * @property {Map<string, {address: string, abi: string[]}>} evmAbis The ABIs of the deployed EVM smart contracts.
+ * @property {Map<string, {user: string, address: string}>} evmUserAddresses The EVM addresses corresponding to each user identity, grouped by channels.
+ * @property {Map<string, {certPem: string, keyPem: string}>} dynamicUserMaterials The certs and keys of dynamically enrolled users.
  * @property {string} defaultInvoker The name of the client to use if an invoker is not specified.
  * @property {number} configSmallestTimeout The timeout value to use when the user-provided timeout is too small.
  * @property {number} configSleepAfterCreateChannel The sleep duration in milliseconds after creating the channels.
@@ -143,19 +146,27 @@ class Fabric extends BlockchainInterface {
             throw new Error(`Fabric SDK ${this.version.toString()} is not supported, use at least version 1.1.0`);
         }
 
+        this.network = new FabricNetwork(networkConfig); // validates the network config
         this.clientProfiles = new Map();
         this.adminProfiles = new Map();
         this.registrarProfiles = new Map();
         this.eventSources = [];
         this.clientIndex = 0;
         this.txIndex = -1;
-        this.networkUtil = new FabricNetwork(networkConfig);
         this.randomTargetPeerCache = new Map();
         this.channelEventSourcesCache = new Map();
         this.randomTargetOrdererCache = new Map();
-        this.defaultInvoker = Array.from(this.networkUtil.getClients())[0];
+        this.evmContractDescriptors = {};
+        this.evmUserAddresses = {};
+        this.clientMaterialStore = {};
+        this.defaultInvoker = Array.from(this.network.getClients())[0];
 
-        if (this.networkUtil.isInCompatibilityMode() && this.version.greaterThan('1.1.0')) {
+        // load solidity packages
+        if (this.network.isSolidityUsed()) {
+            solidityUtil.load();
+        }
+
+        if (this.network.isInCompatibilityMode() && this.version.greaterThan('1.1.0')) {
             throw new Error(`Fabric 1.0 compatibility mode is detected, but SDK version ${this.version.toString()} is used`);
         }
 
@@ -191,17 +202,17 @@ class Fabric extends BlockchainInterface {
      */
     _assembleTargetEventSources(channel, targetPeers) {
         let eventSources = [];
-        if (this.networkUtil.isInCompatibilityMode()) {
+        if (this.network.isInCompatibilityMode()) {
             // NOTE: for old event hubs we have a single connection to every peer set as an event source
             const EventHub = require('fabric-client/lib/EventHub.js');
 
             for (let peer of targetPeers) {
-                let org = this.networkUtil.getOrganizationOfPeer(peer);
+                let org = this.network.getOrganizationOfPeer(peer);
                 let admin = this.adminProfiles.get(org);
 
                 let eventHub = new EventHub(admin);
-                eventHub.setPeerAddr(this.networkUtil.getPeerEventUrl(peer),
-                    this.networkUtil.getGrpcOptionsOfPeer(peer));
+                eventHub.setPeerAddr(this.network.getPeerEventUrl(peer),
+                    this.network.getGrpcOptionsOfPeer(peer));
 
                 eventSources.push({
                     channel: [channel], // unused during chaincode instantiation
@@ -211,7 +222,7 @@ class Fabric extends BlockchainInterface {
             }
         } else {
             for (let peer of targetPeers) {
-                let org = this.networkUtil.getOrganizationOfPeer(peer);
+                let org = this.network.getOrganizationOfPeer(peer);
                 let admin = this.adminProfiles.get(org);
 
                 let eventHub = admin.getChannel(channel, true).newChannelEventHub(peer);
@@ -257,11 +268,11 @@ class Fabric extends BlockchainInterface {
      * @async
      */
     async _createChannels() {
-        let channels = this.networkUtil.getChannels();
+        let channels = this.network.getChannels();
         let channelCreated = false;
 
         for (let channel of channels) {
-            let channelObject = this.networkUtil.getNetworkObject().channels[channel];
+            let channelObject = this.network.getNetworkObject().channels[channel];
 
             if (util.checkProperty(channelObject, 'created') && channelObject.created) {
                 logger.info(`${channel} is configured as created, skipping it`);
@@ -272,14 +283,14 @@ class Fabric extends BlockchainInterface {
 
             let configUpdate;
             if (util.checkProperty(channelObject, 'configBinary')) {
-                configUpdate = this._getChannelConfigFromFile(channelObject, channel);
+                configUpdate = networkUtil.getChannelConfigFromFile(channelObject);
             }
             else {
-                configUpdate = this._getChannelConfigFromConfiguration(channelObject, channel);
+                configUpdate = networkUtil.getChannelConfigFromConfiguration(channelObject);
             }
 
             // NOTE: without knowing the system channel policies, signing with every org admin is a safe bet
-            let orgs = this.networkUtil.getOrganizationsOfChannel(channel);
+            let orgs = this.network.getOrganizationsOfChannel(channel);
             let admin; // declared here to keep the admin of the last org of the channel
             let signatures = [];
             for (let org of orgs) {
@@ -346,7 +357,7 @@ class Fabric extends BlockchainInterface {
                     message: `Commit timeout on ${eventSource.peer}`,
                     time: time
                 });
-            }, this._getRemainingTimeout(startTime, timeout));
+            }, fabricUtil.getRemainingTimeout(startTime, timeout, this.configSmallestTimeout));
 
             eventSource.eventHub.registerTxEvent(txId, (tx, code) => {
                 clearTimeout(handle);
@@ -392,55 +403,6 @@ class Fabric extends BlockchainInterface {
     }
 
     /**
-     * Creates and sets a User object as the context based on the provided identity information.
-     * @param {Client} profile The Client object whose user context must be set.
-     * @param {string} org The name of the user's organization.
-     * @param {string} userName The name of the user.
-     * @param {{privateKeyPEM: Buffer, signedCertPEM: Buffer}} cryptoContent The object containing the signing key and cert in PEM format.
-     * @param {string} profileName Optional name of the profile that will appear in error messages.
-     * @private
-     * @async
-     */
-    async _createUser(profile, org, userName, cryptoContent, profileName) {
-        // set the user explicitly based on its crypto materials
-        // createUser also sets the user context
-        try {
-            await profile.createUser({
-                username: userName,
-                mspid: this.networkUtil.getMspIdOfOrganization(org),
-                cryptoContent: cryptoContent,
-                skipPersistence: false
-            });
-        } catch (err) {
-            throw new Error(`Couldn't create ${profileName || ''} user object: ${err.message}`);
-        }
-    }
-
-    /**
-     * Enrolls the given user through its corresponding CA.
-     * @param {Client} profile The Client object whose user must be enrolled.
-     * @param {string} id The enrollment ID.
-     * @param {string} secret The enrollment secret.
-     * @param {string} profileName Optional name of the profile that will appear in error messages.
-     * @return {Promise<{key: ECDSA_KEY, certificate: string}>} The resulting private key and certificate.
-     * @private
-     * @async
-     */
-    async _enrollUser(profile, id, secret, profileName) {
-        // this call will throw an error if the CA configuration is not found
-        // this error should propagate up
-        let ca = profile.getCertificateAuthority();
-        try {
-            return await ca.enroll({
-                enrollmentID: id,
-                enrollmentSecret: secret
-            });
-        } catch (err) {
-            throw new Error(`Couldn't enroll ${profileName || 'user'}: ${err.message}`);
-        }
-    }
-
-    /**
      * Retrieves a bool argument from the configuration store, taking into account the bool parsing behavior.
      * @param {string} key The key of the configuration to retrieve.
      * @param {object} defaultValue The default value to return if the configuration is not found.
@@ -450,79 +412,6 @@ class Fabric extends BlockchainInterface {
     _getBoolConfig(key, defaultValue) {
         let val = config.get(key, defaultValue);
         return val === true || val === 'true';
-    }
-
-    /**
-     * Extracts the channel configuration directly from the configuration.
-     * @param {object} channelObject The channel configuration object.
-     * @param {string} channelName The name of the channel.
-     * @return {Buffer} The extracted channel configuration bytes.
-     * @private
-     */
-    _getChannelConfigFromConfiguration(channelObject, channelName) {
-        // spawn a configtxlator process and encode the config object through a temporary file
-        // NOTES:
-        // 1) there doesn't seem to be a straightforward SDK API for this
-        // 2) sync is okay in Caliper initialization phase
-        // 3) for some reason configtxlator cannot open /dev/stdin and stdout when buffers are attached to them
-        // so temporary files have to be used
-        // ./configtxlator proto_encode --type=common.ConfigUpdate --input=tmpInputFile --output=tmpOutputFile
-        let binaryPath = util.resolvePath(channelObject.configtxlatorPath);
-        let tmpInputFile = null;
-        let tmpOutputFile = null;
-        try {
-            tmpInputFile = tmp.tmpNameSync();
-            tmpOutputFile = tmp.tmpNameSync();
-            fs.writeFileSync(tmpInputFile, JSON.stringify(channelObject.configUpdateObject));
-            let result = child_process.spawnSync(binaryPath, ['proto_encode', '--type=common.ConfigUpdate', `--output=${tmpOutputFile}`, `--input=${tmpInputFile}`]);
-            if (result.error) {
-                throw new Error(`Couldn't encode ${channelName} config update: ${result.error.message}`);
-            }
-
-            if (result.status !== 0) {
-                let stderr = Buffer.from(result.stderr, 'utf-8').toString();
-                let stdout = Buffer.from(result.stdout, 'utf-8').toString();
-                logger.error(`configtxlator stderr output:\n${stderr}`);
-                logger.error(`configtxlator stdout output:\n${stdout}`);
-                throw new Error(`Couldn't encode ${channelName} config update: exit status is ${result.status}`);
-            }
-
-            return fs.readFileSync(tmpOutputFile);
-        } catch (err) {
-            throw err;
-        } finally {
-            if (tmpInputFile && fs.existsSync(tmpInputFile)) {
-                fs.unlinkSync(tmpInputFile);
-            }
-            if (tmpOutputFile && fs.existsSync(tmpOutputFile)) {
-                fs.unlinkSync(tmpOutputFile);
-            }
-        }
-    }
-
-    /**
-     * Extracts the channel configuration from the configured file.
-     * @param {object} channelObject The channel configuration object.
-     * @param {string} channelName The name of the channel.
-     * @return {Buffer} The extracted channel configuration bytes.
-     * @private
-     */
-    _getChannelConfigFromFile(channelObject, channelName) {
-        // extracting the config from the binary file
-        let binaryPath = util.resolvePath(channelObject.configBinary);
-        let envelopeBytes;
-
-        try {
-            envelopeBytes = fs.readFileSync(binaryPath);
-        } catch (err) {
-            throw new Error(`Couldn't read configuration binary for ${channelName}: ${err.message}`);
-        }
-
-        try {
-            return new FabricClient().extractChannelConfig(envelopeBytes);
-        } catch (err) {
-            throw new Error(`Couldn't extract configuration object for ${channelName}: ${err.message}`);
-        }
     }
 
     /**
@@ -541,293 +430,49 @@ class Fabric extends BlockchainInterface {
     }
 
     /**
-     * Calculates the remaining time to timeout based on the original timeout and a starting time.
-     * @param {number} start The epoch of the start time in ms.
-     * @param {number} original The original timeout in ms.
-     * @returns {number} The remaining time until the timeout in ms.
-     * @private
-     */
-    _getRemainingTimeout(start, original) {
-        let newTimeout = original - (Date.now() - start);
-        if (newTimeout < this.configSmallestTimeout) {
-            logger.warn(`Timeout is too small, default value of ${this.configSmallestTimeout}ms is used instead`);
-            newTimeout = this.configSmallestTimeout;
-        }
-
-        return newTimeout;
-    }
-
-    /**
-     * Checks whether the user materials are already persisted in the local store and sets the user context if found.
-     * @param {Client} profile The Client object to fill with the User instance.
-     * @param {string} userName The name of the user to check and load.
-     * @param {string} profileName Optional name of the profile that will appear in error messages.
-     * @return {Promise<User>} The loaded User object
-     * @private
-     * @async
-     */
-    async _getUserContext(profile, userName, profileName) {
-        // Check whether the materials are already saved
-        // getUserContext automatically sets the user if found
-        try {
-            return await profile.getUserContext(userName, true);
-        } catch (err) {
-            throw new Error(`Couldn't check whether ${profileName || 'the user'}'s materials are available locally: ${err.message}`);
-        }
-    }
-
-    /**
      * Initializes the admins of the organizations.
      *
-     * @param {boolean} initPhase Indicates whether to log admin init progress.
+     * @param {boolean} verbose Indicates whether to log admin init progress.
      * @private
      * @async
      */
-    async _initializeAdmins(initPhase) {
-        let orgs = this.networkUtil.getOrganizations();
+    async _initializeAdmins(verbose) {
+        let orgs = this.network.getOrganizations();
+
         for (let org of orgs) {
-            let adminName = `admin.${org}`;
-            // build the common part of the profile
-            let adminProfile = await this._prepareClientProfile(org, undefined, `${org}'s admin`);
-
-            // check if the materials already exist locally
-            let admin = await this._getUserContext(adminProfile, adminName, `${org}'s admin`);
-
-            if (admin) {
-                this.adminProfiles.set(org, adminProfile);
-
-                if (this.networkUtil.isMutualTlsEnabled()) {
-                    this._setTlsAdminCertAndKey(org);
-                }
-
-                if (initPhase) {
-                    logger.warn(`${org}'s admin's materials found locally. Make sure it is the right one!`);
-                }
-                continue;
-            }
-
-            // set the admin explicitly based on its crypto materials
-            await this._createUser(adminProfile, org, adminName, this.networkUtil.getAdminCryptoContentOfOrganization(org),
-                `${org}'s admin`);
-
-            this.adminProfiles.set(org, adminProfile);
-
-            if (this.networkUtil.isMutualTlsEnabled()) {
-                this._setTlsAdminCertAndKey(org);
-            }
-
-            logger.info(`${org}'s admin's materials are successfully loaded`);
-        }
-    }
-
-    /**
-     * Initializes the given channel of every client profile to be able to verify proposal responses.
-     * @param {Map<string, FabricClient>} profiles The collection of client profiles.
-     * @param {string} channel The name of the channel to initialize.
-     * @private
-     * @async
-     */
-    async _initializeChannel(profiles, channel) {
-        // initialize the channel for every client profile from the local config
-        for (let profile of profiles.entries()) {
-            let ch = profile[1].getChannel(channel, false);
-            if (ch) {
-                try {
-                    await ch.initialize();
-                } catch (err) {
-                    logger.error(`Couldn't initialize ${channel} for ${profile[0]}: ${err.message}`);
-                    throw err;
-                }
-            }
+            await fabricUtil.loadAdminOfOrganization(org, this.network, this.adminProfiles, verbose);
         }
     }
 
     /**
      * Initializes the registrars of the organizations.
      *
-     * @param {boolean} initPhase Indicates whether to log registrar init progress.
+     * @param {boolean} verbose Indicates whether to log the registrar init progress.
      * @private
      * @async
      */
-    async _initializeRegistrars(initPhase) {
-        let orgs = this.networkUtil.getOrganizations();
+    async _initializeRegistrars(verbose) {
+        let orgs = this.network.getOrganizations();
+
         for (let org of orgs) {
-
-            // providing registrar information is optional and only needed for user registration and enrollment
-            let registrarInfo = this.networkUtil.getRegistrarOfOrganization(org);
-            if (!registrarInfo) {
-                if (initPhase) {
-                    logger.warn(`${org}'s registrar information not provided.`);
-                }
-                continue;
-            }
-
-            // build the common part of the profile
-            let registrarProfile = await this._prepareClientProfile(org, undefined, 'registrar');
-            // check if the materials already exist locally
-            let registrar = await this._getUserContext(registrarProfile, registrarInfo.enrollId, `${org}'s registrar`);
-
-            if (registrar) {
-                if (initPhase) {
-                    logger.warn(`${org}'s registrar's materials found locally. Make sure it is the right one!`);
-                }
-                this.registrarProfiles.set(org, registrarProfile);
-                continue;
-            }
-
-            // set the registrar identity as the current user context
-            await this._setUserContextByEnrollment(registrarProfile, registrarInfo.enrollId,
-                registrarInfo.enrollSecret, `${org}'s registrar`);
-
-            this.registrarProfiles.set(org, registrarProfile);
-            if (initPhase) {
-                logger.info(`${org}'s registrar enrolled successfully`);
-            }
+            await fabricUtil.loadRegistrarOfOrganization(org, this.network, this.registrarProfiles, verbose);
         }
     }
 
     /**
      * Registers and enrolls the specified users if necessary.
      *
-     * @param {boolean} initPhase Indicates whether to log user init progress.
+     * @param {boolean} verbose Indicates whether to log user init progress.
      * @private
      * @async
      */
-    async _initializeUsers(initPhase) {
-        let clients = this.networkUtil.getClients();
+    async _initializeUsers(verbose) {
+        let clients = this.network.getClients();
 
         // register and enroll each client with its organization's CA
         for (let client of clients) {
-            let org = this.networkUtil.getOrganizationOfClient(client);
-
-            // create the profile based on the connection profile
-            let clientProfile = await this._prepareClientProfile(org, client, client);
-            this.clientProfiles.set(client, clientProfile);
-
-            // check if the materials already exist locally
-            let user = await this._getUserContext(clientProfile, client, client);
-            if (user) {
-                if (this.networkUtil.isMutualTlsEnabled()) {
-                    // "retrieve" and set the deserialized cert and key
-                    clientProfile.setTlsClientCertAndKey(user.getIdentity()._certificate, user.getSigningIdentity()._signer._key.toBytes());
-                }
-
-                if (initPhase) {
-                    logger.warn(`${client}'s materials found locally. Make sure it is the right one!`);
-                }
-                continue;
-            }
-
-            let cryptoContent = this.networkUtil.getClientCryptoContent(client);
-            if (cryptoContent) {
-                // the client is already enrolled, just create and persist the User object
-                await this._createUser(clientProfile, org, client, cryptoContent, client);
-                if (this.networkUtil.isMutualTlsEnabled()) {
-                    // the materials are included in the configuration file
-                    let crypto = this.networkUtil.getClientCryptoContent(client);
-                    clientProfile.setTlsClientCertAndKey(crypto.signedCertPEM.toString(), crypto.privateKeyPEM.toString());
-                }
-
-                if (initPhase) {
-                    logger.info(`${client}'s materials are successfully loaded`);
-                }
-                continue;
-            }
-
-            // The user needs to be enrolled or even registered
-
-            // if the enrollment ID and secret is provided, then enroll the already registered user
-            let enrollmentSecret = this.networkUtil.getClientEnrollmentSecret(client);
-            if (enrollmentSecret) {
-                let enrollment = await this._enrollUser(clientProfile, client, enrollmentSecret, client);
-
-                // create the new user based on the retrieved materials
-                await this._createUser(clientProfile, org, client,
-                    {
-                        privateKeyPEM: enrollment.key.toBytes(),
-                        signedCertPEM: Buffer.from(enrollment.certificate)
-                    }, client);
-
-                if (this.networkUtil.isMutualTlsEnabled()) {
-                    // set the received cert and key for mutual TLS
-                    clientProfile.setTlsClientCertAndKey(Buffer.from(enrollment.certificate).toString(), enrollment.key.toString());
-                }
-
-                if (initPhase) {
-                    logger.info(`${client} successfully enrolled`);
-                }
-                continue;
-            }
-
-            // Otherwise, register then enroll the user
-            let secret;
-            try {
-                let registrarProfile = this.registrarProfiles.get(org);
-
-                if (!registrarProfile) {
-                    throw new Error(`Registrar identity is not provided for ${org}`);
-                }
-
-                let registrarInfo = this.networkUtil.getRegistrarOfOrganization(org);
-                let registrar = await registrarProfile.getUserContext(registrarInfo.enrollId, true);
-                // this call will throw an error if the CA configuration is not found
-                // this error should propagate up
-                let ca = clientProfile.getCertificateAuthority();
-                let userAffiliation = this.networkUtil.getAffiliationOfUser(client);
-
-                // if not in compatibility mode (i.e., at least SDK v1.1), check whether the affiliation is already registered or not
-                if (!this.networkUtil.isInCompatibilityMode()) {
-                    let affService = ca.newAffiliationService();
-                    let affiliationExists = false;
-                    try {
-                        await affService.getOne(userAffiliation, registrar);
-                        affiliationExists = true;
-                    } catch (err) {
-                        if (initPhase) {
-                            logger.info(`${userAffiliation} affiliation doesn't exists`);
-                        }
-                    }
-
-                    if (!affiliationExists) {
-                        await affService.create({name: userAffiliation, force: true}, registrar);
-                        if (initPhase) {
-                            logger.info(`${userAffiliation} affiliation added`);
-                        }
-                    }
-                }
-
-                let attributes = this.networkUtil.getAttributesOfUser(client);
-                attributes.push({name: 'hf.Registrar.Roles', value: 'client'});
-
-                secret = await ca.register({
-                    enrollmentID: client,
-                    affiliation: userAffiliation,
-                    role: 'client',
-                    attrs: attributes
-                }, registrar);
-            } catch (err) {
-                throw new Error(`Couldn't register ${client}: ${err.message}`);
-            }
-
-            if (initPhase) {
-                logger.info(`${client} successfully registered`);
-            }
-
-            let enrollment = await this._enrollUser(clientProfile, client, secret, client);
-
-            // create the new user based on the retrieved materials
-            await this._createUser(clientProfile, org, client,
-                {privateKeyPEM: enrollment.key.toBytes(), signedCertPEM: Buffer.from(enrollment.certificate)}, client);
-
-            if (this.networkUtil.isMutualTlsEnabled()) {
-                // set the received cert and key for mutual TLS
-                clientProfile.setTlsClientCertAndKey(Buffer.from(enrollment.certificate).toString(), enrollment.key.toString());
-                //this._setTlsClientCertAndKey(client);
-            }
-
-            if (initPhase) {
-                logger.info(`${client} successfully enrolled`);
-            }
+            await fabricUtil.loadUser(client, this.network, this.clientProfiles,
+                this.clientMaterialStore, this.registrarProfiles, verbose);
         }
     }
 
@@ -843,17 +488,22 @@ class Fabric extends BlockchainInterface {
 
         let errors = [];
 
-        let channels = this.networkUtil.getChannels();
+        let channels = this.network.getChannels();
         for (let channel of channels) {
             logger.info(`Installing chaincodes for ${channel}...`);
 
             // proceed cc by cc for the channel
-            let chaincodeInfos = this.networkUtil.getChaincodesOfChannel(channel);
+            let chaincodeInfos = this.network.getChaincodesOfChannel(channel);
             for (let chaincodeInfo of chaincodeInfos) {
-                let ccObject = this.networkUtil.getNetworkObject().channels[channel].chaincodes.find(
+                // no need to install Solidity contracts
+                if (chaincodeInfo.language === 'solidity') {
+                    continue;
+                }
+
+                let ccObject = this.network.getNetworkObject().channels[channel].chaincodes.find(
                     cc => cc.id === chaincodeInfo.id && cc.version === chaincodeInfo.version);
 
-                let targetPeers = this.networkUtil.getTargetPeersOfChaincodeOfChannel(chaincodeInfo, channel);
+                let targetPeers = this.network.getTargetPeersOfChaincodeOfChannel(chaincodeInfo, channel);
                 if (targetPeers.size < 1) {
                     logger.info(`No target peers are defined for ${chaincodeInfo.id}@${chaincodeInfo.version} on ${channel}, skipping it`);
                     continue;
@@ -863,7 +513,7 @@ class Fabric extends BlockchainInterface {
                 let installTargets = [];
 
                 for (let peer of targetPeers) {
-                    let org = this.networkUtil.getOrganizationOfPeer(peer);
+                    let org = this.network.getOrganizationOfPeer(peer);
                     let admin = this.adminProfiles.get(org);
 
                     try {
@@ -896,9 +546,9 @@ class Fabric extends BlockchainInterface {
                 }
 
                 // install chaincodes org by org
-                let orgs = this.networkUtil.getOrganizationsOfChannel(channel);
+                let orgs = this.network.getOrganizationsOfChannel(channel);
                 for (let org of orgs) {
-                    let peersOfOrg = this.networkUtil.getPeersOfOrganization(org);
+                    let peersOfOrg = this.network.getPeersOfOrganization(org);
                     // selecting the target peers for this org
                     let orgPeerTargets = installTargets.filter(p => peersOfOrg.has(p));
 
@@ -922,7 +572,7 @@ class Fabric extends BlockchainInterface {
 
                     // metadata (like CouchDB indices) are only supported since Fabric v1.1
                     if (util.checkProperty(ccObject, 'metadataPath')) {
-                        if (!this.networkUtil.isInCompatibilityMode()) {
+                        if (!this.network.isInCompatibilityMode()) {
                             request.metadataPath = util.resolvePath(ccObject.metadataPath);
                         } else {
                             throw new Error(`Installing ${chaincodeInfo.id}@${chaincodeInfo.version} with metadata is not supported in Fabric v1.0`);
@@ -931,9 +581,17 @@ class Fabric extends BlockchainInterface {
 
                     // install to necessary peers of org and process the results
                     try {
+                        // temporarily change GOPATH if needed
+                        let previousGopath = process.env.GOPATH;
+                        if (util.checkProperty(ccObject, 'gopath')) {
+                            process.env.GOPATH = util.resolvePath(ccObject.gopath);
+                        }
                         /** @link{ProposalResponseObject} */
                         let propRespObject = await admin.installChaincode(request);
                         util.assertDefined(propRespObject);
+
+                        // restore gopath
+                        process.env.GOPATH = previousGopath;
 
                         /** Array of @link{ProposalResponse} objects */
                         let proposalResponses = propRespObject[0];
@@ -990,20 +648,26 @@ class Fabric extends BlockchainInterface {
      * @async
      */
     async _instantiateChaincodes() {
-        let channels = this.networkUtil.getChannels();
+        let channels = this.network.getChannels();
         let chaincodeInstantiated = false;
 
-        // chaincodes needs to be installed channel by channel
+        // chaincodes needs to be instantiated channel by channel
         for (let channel of channels) {
-            let chaincodeInfos = this.networkUtil.getChaincodesOfChannel(channel);
+            let chaincodeInfos = this.network.getChaincodesOfChannel(channel);
 
+            // instantiate Fabric chaincodes
             for (let chaincodeInfo of chaincodeInfos) {
+                // deploy solidity smart contracts after the chaincodes are deployed
+                if (chaincodeInfo.language === 'solidity') {
+                    continue;
+                }
+
                 logger.info(`Instantiating ${chaincodeInfo.id}@${chaincodeInfo.version} in ${channel}. This might take some time...`);
 
-                let ccObject = this.networkUtil.getNetworkObject().channels[channel].chaincodes.find(
+                let ccObject = this.network.getNetworkObject().channels[channel].chaincodes.find(
                     cc => cc.id === chaincodeInfo.id && cc.version === chaincodeInfo.version);
 
-                let targetPeers = Array.from(this.networkUtil.getTargetPeersOfChaincodeOfChannel(chaincodeInfo, channel));
+                let targetPeers = Array.from(this.network.getTargetPeersOfChaincodeOfChannel(chaincodeInfo, channel));
                 if (targetPeers.length < 1) {
                     logger.info(`No target peers are defined for ${chaincodeInfo.id}@${chaincodeInfo.version} in ${channel}, skipping it`);
                     continue;
@@ -1012,7 +676,7 @@ class Fabric extends BlockchainInterface {
                 // select a target peer for the chaincode to see if it's instantiated
                 // these are the same as the install targets, so if one of the peers has already instantiated the chaincode,
                 // then the other targets also had done the same
-                let org = this.networkUtil.getOrganizationOfPeer(targetPeers[0]);
+                let org = this.network.getOrganizationOfPeer(targetPeers[0]);
                 let admin = this.adminProfiles.get(org);
 
                 /** @link{ChaincodeQueryResponse} */
@@ -1044,15 +708,15 @@ class Fabric extends BlockchainInterface {
                     args: ccObject.init || [],
                     fcn: ccObject.function || 'init',
                     'endorsement-policy': ccObject['endorsement-policy'] ||
-                        this.networkUtil.getDefaultEndorsementPolicy(channel, { id: ccObject.id, version: ccObject.version }),
-                    transientMap: this.networkUtil.getTransientMapOfChaincodeOfChannel(chaincodeInfo, channel),
+                        this.network.getDefaultEndorsementPolicy(channel, { id: ccObject.id, version: ccObject.version }),
+                    transientMap: this.network.getTransientMapOfChaincodeOfChannel(chaincodeInfo, channel),
                     txId: txId
                 };
 
                 // check chaincode language
                 // other chaincodes types are not supported in every version
                 if (ccObject.language !== 'golang') {
-                    if (ccObject.language === 'node' && this.networkUtil.isInCompatibilityMode()) {
+                    if (ccObject.language === 'node' && this.network.isInCompatibilityMode()) {
                         throw new Error(`${chaincodeInfo.id}@${chaincodeInfo.version} in ${channel}: Node.js chaincodes are supported starting from Fabric v1.1`);
                     }
 
@@ -1184,6 +848,182 @@ class Fabric extends BlockchainInterface {
                     });
                 }
             }
+
+            // map the network client identities to EVM addresses if EVM contracts are present
+            if (!this.network.isSolidityUsed()) {
+                continue;
+            }
+
+            let context = await this.getContext(undefined, undefined, 0);
+            await util.sleep(1000);
+
+            // deploy Solidity contracts
+            for (let chaincodeInfo of chaincodeInfos) {
+                if (chaincodeInfo.language !== 'solidity') {
+                    continue;
+                }
+
+                let ccObject = this.network.getNetworkObject().channels[channel].chaincodes.find(
+                    cc => cc.id === chaincodeInfo.id && cc.version === chaincodeInfo.version && cc.language === chaincodeInfo.language);
+
+                let contractID = this.network.getContractIdOfChaincodeOfChannel(channel, chaincodeInfo.id, chaincodeInfo.version);
+                let contractDescriptor;
+
+                let bytecode;
+                let contractName = util.checkProperty(ccObject, 'contractName') ? ccObject.contractName : ccObject.id;
+
+                // priority: path > bytecode > address
+                if (util.checkProperty(ccObject, 'path')) {
+                    // need to compile
+                    let contractPath = util.resolvePath(ccObject.path);
+                    let compilerResult = await solidityUtil.compileContract(contractPath, contractName,
+                        util.checkProperty(ccObject, 'detectCompilerVersion') && ccObject.detectCompilerVersion);
+
+                    bytecode = compilerResult.bytecode;
+                    // save the signatures for the client processes, still need the address
+                    contractDescriptor = { methodSignatures: compilerResult.methodSignatures };
+                } else if (util.checkProperty(ccObject, 'bytecode')) {
+                    // if the bytecode is provided, no need for compilation
+                    logger.info(`${contractID} bytecode provided, skipping compilation`);
+                    if (util.checkProperty(ccObject.bytecode, 'path')) {
+                        bytecode = fs.readFileSync(util.resolvePath(ccObject.bytecode.path), 'utf-8').toString();
+                    } else {
+                        bytecode = ccObject.bytecode.content;
+                    }
+
+                    // save the signatures for the client processes, still need the address
+                    contractDescriptor = { methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures) };
+                } else {
+                    logger.info(`${contractID} is already deployed in ${channel} at address ${ccObject.address}`);
+
+                    // save the descriptor for distribution for the client processes
+                    contractDescriptor = {
+                        address: ccObject.address,
+                        methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures)
+                    };
+                    this.evmContractDescriptors[contractID] = contractDescriptor;
+                    continue;
+                }
+
+                let ctrArgsProvided = util.checkProperty(ccObject, 'init');
+                let hasConstructor = solidityUtil.isConstructorArgsNeeded(contractDescriptor.methodSignatures);
+
+                if (ctrArgsProvided && !hasConstructor) {
+                    throw new Error(`Solidity contract ${contractID} does not contain a constructor, but arguments are provided`);
+                }
+
+                if (!ctrArgsProvided && hasConstructor) {
+                    throw new Error(`Solidity contract ${contractID} contains a constructor, but no arguments are provided`);
+                }
+
+                // check for constructor arguments, and append their encodings
+                if (ctrArgsProvided) {
+                    bytecode += solidityUtil.encodeConstructorArguments(contractDescriptor.methodSignatures, ccObject.init);
+                    logger.debug(`${contractID} bytecode with constructor arguments: ${bytecode}`);
+                }
+
+                // deploy the contract through the EVM proxy chaincode of the channel
+                let zeroAddress = solidityUtil.getZeroAddress();
+                let evmProxyChaincodeID = this.network.getEvmProxyChaincodeOfChannel(channel);
+                let evmProxyChaincodeDetails = this.network.getContractDetails(evmProxyChaincodeID);
+
+                let invokeSettings = {
+                    invokerIdentity: ccObject.deployerIdentity,
+                    channel: evmProxyChaincodeDetails.channel,
+                    chaincodeId: evmProxyChaincodeDetails.id,
+                    chaincodeVersion: evmProxyChaincodeDetails.version,
+                    chaincodeFunction: zeroAddress,
+                    chaincodeArguments: [ bytecode, '0', contractName ] // zero wei, plus contractName will be the nonce
+                };
+
+                // setup eventhubs for a transaction invocation
+                logger.info(`Deploying Solidity contract ${contractID}. This might take some time...`);
+                let results = await this._submitSingleTransaction(context, invokeSettings, 100*1000);
+
+                if (!results.IsCommitted()) {
+                    throw new Error(`Couldn't deploy Solidity contract ${contractID}`);
+                }
+
+                contractDescriptor.address = results.GetResult().toString();
+                // save the descriptor for the client processes
+                this.evmContractDescriptors[contractID] = contractDescriptor;
+                logger.info(`Successfully deployed Solidity contract ${contractID}`);
+            }
+
+            let evmProxyChaincodeID = this.network.getEvmProxyChaincodeOfChannel(channel);
+            let evmProxyChaincodeDetails = this.network.getContractDetails(evmProxyChaincodeID);
+
+            let querySettings = {
+                channel: evmProxyChaincodeDetails.channel,
+                chaincodeId: evmProxyChaincodeDetails.id,
+                chaincodeVersion: evmProxyChaincodeDetails.version,
+                chaincodeFunction: 'account', // get the account address for the invoker
+                countAsLoad: false
+            };
+
+            for (let client of this.clientProfiles) {
+                querySettings.invokerIdentity = client[0];
+                let result = await this._submitSingleQuery(context, querySettings, 10 * 1000);
+                if (!result.IsCommitted()) {
+                    throw new Error(`Failed to get EVM address for ${client[0]}`);
+                }
+
+                if (!this.evmUserAddresses[channel]) {
+                    this.evmUserAddresses[channel] = {};
+                }
+
+                // save the user address on a per channel basis
+                // (just in case other EVM proxy implementations are used in other channels)
+                let userAddress = `0x${result.GetResult().toString()}`;
+                logger.debug(`EVM user address for ${client[0]} in ${channel}: ${userAddress}`);
+                this.evmUserAddresses[channel][client[0]] = userAddress;
+            }
+
+            for (let admin of this.adminProfiles) {
+                querySettings.invokerIdentity = `#${admin[0]}`;
+                let result = await this._submitSingleQuery(undefined, querySettings, 10 * 1000);
+                if (!result.IsCommitted()) {
+                    throw new Error(`Failed to get EVM address for ${admin[0]}`);
+                }
+
+                if (!this.evmUserAddresses[channel]) {
+                    this.evmUserAddresses[channel] = {};
+                }
+
+                // save the user address on a per channel basis
+                // (just in case other EVM proxy implementations are used in other channels)
+                let userAddress = `0x${result.GetResult().toString()}`;
+                logger.debug(`EVM user address for ${admin[0]} in ${channel}: ${userAddress}`);
+                this.evmUserAddresses[channel][`#${admin[0]}`] = userAddress;
+            }
+
+            // set initial balances
+            let txSettings = {
+                channel: evmProxyChaincodeDetails.channel,
+                chaincodeId: evmProxyChaincodeDetails.id,
+                chaincodeVersion: evmProxyChaincodeDetails.version,
+                chaincodeFunction: 'addToBalance',
+                chaincodeArguments: [ '100000' ]
+            };
+
+            for (let client of this.clientProfiles) {
+                txSettings.invokerIdentity = client[0];
+                logger.debug(`Initializing balance for ${client[0]}...`);
+                let result = await this._submitSingleTransaction(context, txSettings, 10 * 1000);
+                if (!result.IsCommitted()) {
+                    throw new Error(`Failed to set initial balance for ${client[0]}`);
+                }
+            }
+
+            for (let admin of this.adminProfiles) {
+                txSettings.invokerIdentity = `#${admin[0]}`;
+                let result = await this._submitSingleTransaction(context, txSettings, 10 * 1000);
+                if (!result.IsCommitted()) {
+                    throw new Error(`Failed to set initial balance for ${admin[0]}`);
+                }
+            }
+
+            await this.releaseContext(context);
         }
 
         return chaincodeInstantiated;
@@ -1196,19 +1036,19 @@ class Fabric extends BlockchainInterface {
      * @async
      */
     async _joinChannels() {
-        let channels = this.networkUtil.getChannels();
+        let channels = this.network.getChannels();
         let channelJoined = false;
         let errors = [];
 
         for (let channelName of channels) {
             let genesisBlock = null;
-            let orgs = this.networkUtil.getOrganizationsOfChannel(channelName);
+            let orgs = this.network.getOrganizationsOfChannel(channelName);
 
             for (let org of orgs) {
                 let admin = this.adminProfiles.get(org);
                 let channelObject = admin.getChannel(channelName, true);
 
-                let peers = this.networkUtil.getPeersOfOrganizationAndChannel(org, channelName);
+                let peers = this.network.getPeersOfOrganizationAndChannel(org, channelName);
                 let peersToJoin = [];
 
                 for (let peer of peers) {
@@ -1304,24 +1144,24 @@ class Fabric extends BlockchainInterface {
      */
     _prepareCaches() {
         // assemble random target peer cache for each channel's each chaincode
-        for (let channel of this.networkUtil.getChannels()) {
+        for (let channel of this.network.getChannels()) {
             this.randomTargetPeerCache.set(channel, new Map());
 
-            for (let chaincode of this.networkUtil.getChaincodesOfChannel(channel)) {
+            for (let chaincode of this.network.getChaincodesOfChannel(channel)) {
                 let idAndVersion = `${chaincode.id}@${chaincode.version}`;
                 this.randomTargetPeerCache.get(channel).set(idAndVersion, new Map());
 
                 let targetOrgs = new Set();
-                let targetPeers = this.networkUtil.getTargetPeersOfChaincodeOfChannel(chaincode, channel);
+                let targetPeers = this.network.getTargetPeersOfChaincodeOfChannel(chaincode, channel);
 
                 // get target orgs
                 for (let peer of targetPeers) {
-                    targetOrgs.add(this.networkUtil.getOrganizationOfPeer(peer));
+                    targetOrgs.add(this.network.getOrganizationOfPeer(peer));
                 }
 
                 // set target peers in each org
                 for (let org of targetOrgs) {
-                    let peersOfOrg = this.networkUtil.getPeersOfOrganizationAndChannel(org, channel);
+                    let peersOfOrg = this.network.getPeersOfOrganizationAndChannel(org, channel);
 
                     // the peers of the org that target the given chaincode of the given channel
                     // one of these peers needs to be a target for every org
@@ -1332,83 +1172,8 @@ class Fabric extends BlockchainInterface {
         }
 
         // assemble random target orderer cache for each channel
-        for (let channel of this.networkUtil.getChannels()) {
-            this.randomTargetOrdererCache.set(channel, Array.from(this.networkUtil.getOrderersOfChannel(channel)));
-        }
-    }
-
-    /**
-     * Partially assembles a Client object containing general network information.
-     * @param {string} org The name of the organization the client belongs to. Mandatory, if the client name is omitted.
-     * @param {string} clientName The name of the client to base the profile on.
-     *                            If omitted, then the first client of the organization will be used.
-     * @param {string} profileName Optional name of the profile that will appear in error messages.
-     * @return {Promise<Client>} The partially assembled Client object.
-     * @private
-     * @async
-     */
-    async _prepareClientProfile(org, clientName, profileName) {
-        let client = clientName;
-        if (!client) {
-            util.assertDefined(org);
-            // base it on the first client connection profile of the org
-            let clients = this.networkUtil.getClientsOfOrganization(org);
-
-            // NOTE: this assumes at least one client per org, which is reasonable, the clients will interact with the network
-            if (clients.size < 1) {
-                throw new Error(`At least one client specification for ${org} is needed to initialize the ${profileName || 'profile'}`);
-            }
-
-            client = Array.from(clients)[0];
-        }
-
-        // load the general network data from a clone of the network object
-        // NOTE: if we provide a common object instead, the Client class will use it directly,
-        // and it will be overwritten when loading the next client
-        let profile = FabricClient.loadFromConfig(this.networkUtil.getNewNetworkObject());
-        profile.loadFromConfig({
-            version: '1.0',
-            client: this.networkUtil.getClientObject(client)
-        });
-
-        try {
-            await profile.initCredentialStores();
-        } catch (err) {
-            throw new Error(`Couldn't initialize the credential stores for ${org}'s ${profileName || 'profile'}: ${err.message}`);
-        }
-
-        return profile;
-    }
-
-    /**
-     * Sets the mutual TLS for the admin of the given organization.
-     * @param {string} org The name of the organization.
-     * @private
-     */
-    _setTlsAdminCertAndKey(org) {
-        let profile = this.adminProfiles.get(org);
-        let crypto = this.networkUtil.getAdminCryptoContentOfOrganization(org);
-        profile.setTlsClientCertAndKey(crypto.signedCertPEM.toString(), crypto.privateKeyPEM.toString());
-    }
-
-    /**
-     * Tries to set the given identity as the current user context for the given profile. Enrolls it if needed and can.
-     * @param {Client} profile The Client object whose user context must be set.
-     * @param {string} userName The name of the user.
-     * @param {string} password The password for the user.
-     * @param {string} profileName Optional name of the profile that will appear in error messages.
-     * @private
-     * @async
-     */
-    async _setUserContextByEnrollment(profile, userName, password, profileName) {
-        try {
-            // automatically tries to enroll the given identity with the CA (must be registered)
-            await profile.setUserContext({
-                username: userName,
-                password: password
-            }, false);
-        } catch (err) {
-            throw new Error(`Couldn't enroll ${profileName || 'the user'} or set it as user context: ${err.message}`);
+        for (let channel of this.network.getChannels()) {
+            this.randomTargetOrdererCache.set(channel, Array.from(this.network.getOrderersOfChannel(channel)));
         }
     }
 
@@ -1462,14 +1227,15 @@ class Fabric extends BlockchainInterface {
             fcn: querySettings.chaincodeFunction,
             args: querySettings.chaincodeArguments || [],
             transientMap: querySettings.transientMap,
-            targets: targetPeers
+            targets: targetPeers,
+            txId: txIdObject
         };
 
         // the exception should propagate up for an invalid channel name, indicating a user callback module error
         let channel = invoker.getChannel(querySettings.channel, true);
 
 
-        if (countAsLoad && context.engine) {
+        if (countAsLoad && context && context.engine) {
             context.engine.submitCallback(1);
         }
 
@@ -1483,7 +1249,7 @@ class Fabric extends BlockchainInterface {
             let resultPromise = new Promise(async (resolve, reject) => {
                 let timeoutHandle = setTimeout(() => {
                     reject(new Error('TIMEOUT'));
-                }, this._getRemainingTimeout(startTime, timeout));
+                }, fabricUtil.getRemainingTimeout(startTime, timeout, this.configSmallestTimeout));
 
                 let result = await channel.queryByChaincode(proposalRequest, admin);
                 clearTimeout(timeoutHandle);
@@ -1595,13 +1361,13 @@ class Fabric extends BlockchainInterface {
         // NOTE: everything happens inside a try-catch
         // no exception should escape, transaction failures have to be handled gracefully
         try {
-            if (context.engine) {
+            if (context && context.engine) {
                 context.engine.submitCallback(1);
             }
             try {
                 // account for the elapsed time up to this point
                 proposalResponseObject = await channel.sendTransactionProposal(proposalRequest,
-                    this._getRemainingTimeout(startTime, timeout));
+                    fabricUtil.getRemainingTimeout(startTime, timeout, this.configSmallestTimeout));
 
                 invokeStatus.Set('time_endorse', Date.now());
             } catch (err) {
@@ -1645,6 +1411,7 @@ class Fabric extends BlockchainInterface {
                 // NOTE: the last one will be kept as result
                 invokeStatus.SetResult(proposalResponse.response.payload);
                 invokeStatus.Set(`endorsement_result_${targetName}`, proposalResponse.response.payload);
+                invokeStatus.Set('rwset_payload', proposalResponse.payload); // the last will prevail
 
                 // verify the endorsement signature and identity if configured
                 if (this.configVerifyProposalResponse) {
@@ -1720,7 +1487,7 @@ class Fabric extends BlockchainInterface {
                 let responsePromise = new Promise(async (resolve, reject) => {
                     let timeoutHandle = setTimeout(() => {
                         reject(new Error('TIMEOUT'));
-                    }, this._getRemainingTimeout(startTime, timeout));
+                    }, fabricUtil.getRemainingTimeout(startTime, timeout, this.configSmallestTimeout));
 
                     let result = await channel.sendTransaction(transactionRequest);
                     clearTimeout(timeoutHandle);
@@ -1807,42 +1574,49 @@ class Fabric extends BlockchainInterface {
      * Prepares the adapter by loading user data and connection to the event hubs.
      *
      * @param {string} name Unused.
-     * @param {Array<string>} args Unused.
+     * @param {object} args The arguments from the adapter of the main process.
      * @param {number} clientIdx The client index.
      * @return {Promise<{networkInfo : FabricNetwork, eventSources: EventSource[]}>} Returns the network utility object.
      * @async
      */
     async getContext(name, args, clientIdx) {
+        if (args) {
+            logger.debug(`Received client args: ${JSON.stringify(args)}`);
+            this.evmContractDescriptors = args.evmContractDescriptors;
+            this.evmUserAddresses = args.evmUserAddresses;
+            this.clientMaterialStore = args.clientMaterialStore;
+        }
+
         // reload the profiles silently
         await this._initializeRegistrars(false);
         await this._initializeAdmins(false);
         await this._initializeUsers(false);
 
-        for (let channel of this.networkUtil.getChannels()) {
+        for (let channel of this.network.getChannels()) {
             // initialize the channels by getting the config from the orderer
             //await this._initializeChannel(this.registrarProfiles, channel);
-            await this._initializeChannel(this.adminProfiles, channel);
-            await this._initializeChannel(this.clientProfiles, channel);
+            await fabricUtil.initializeChannel(this.adminProfiles, channel);
+            await fabricUtil.initializeChannel(this.clientProfiles, channel);
         }
 
         this.clientIndex = clientIdx;
         this.txIndex = -1; // reset counter for new test round
 
-        if (this.networkUtil.isInCompatibilityMode()) {
+        if (this.network.isInCompatibilityMode()) {
             // NOTE: for old event hubs we have a single connection to every peer set as an event source
             const EventHub = require('fabric-client/lib/EventHub.js');
 
-            for (let peer of this.networkUtil.getAllEventSources()) {
-                let org = this.networkUtil.getOrganizationOfPeer(peer);
+            for (let peer of this.network.getAllEventSources()) {
+                let org = this.network.getOrganizationOfPeer(peer);
                 let admin = this.adminProfiles.get(org);
 
                 let eventHub = new EventHub(admin);
-                eventHub.setPeerAddr(this.networkUtil.getPeerEventUrl(peer),
-                    this.networkUtil.getGrpcOptionsOfPeer(peer));
+                eventHub.setPeerAddr(this.network.getPeerEventUrl(peer),
+                    this.network.getGrpcOptionsOfPeer(peer));
 
                 // we can use the same peer for multiple channels in case of peer-level eventing
                 this.eventSources.push({
-                    channel: this.networkUtil.getChannelsOfPeer(peer),
+                    channel: this.network.getChannelsOfPeer(peer),
                     peer: peer,
                     eventHub: eventHub
                 });
@@ -1850,12 +1624,12 @@ class Fabric extends BlockchainInterface {
         } else {
             // NOTE: for channel event hubs we might have multiple connections to a peer,
             // so connect to the defined event sources of every org in every channel
-            for (let channel of this.networkUtil.getChannels()) {
-                for (let org of this.networkUtil.getOrganizationsOfChannel(channel)) {
+            for (let channel of this.network.getChannels()) {
+                for (let org of this.network.getOrganizationsOfChannel(channel)) {
                     let admin = this.adminProfiles.get(org);
 
                     // The API for retrieving channel event hubs changed, from SDK v1.2 it expects the MSP ID of the org
-                    let orgId = this.version.lessThan('1.2.0') ? org : this.networkUtil.getMspIdOfOrganization(org);
+                    let orgId = this.version.lessThan('1.2.0') ? org : this.network.getMspIdOfOrganization(org);
 
                     let eventHubs = admin.getChannel(channel, true).getChannelEventHubsForOrg(orgId);
 
@@ -1863,7 +1637,7 @@ class Fabric extends BlockchainInterface {
                     for (let eventHub of eventHubs) {
                         this.eventSources.push({
                             channel: [channel],
-                            peer: this.networkUtil.getPeerNameOfEventHub(eventHub),
+                            peer: this.network.getPeerNameOfEventHub(eventHub),
                             eventHub: eventHub
                         });
                     }
@@ -1895,7 +1669,9 @@ class Fabric extends BlockchainInterface {
         }
 
         return {
-            networkInfo: this.networkUtil
+            networkInfo: this.network,
+            evmUserAddresses: this.evmUserAddresses,
+            evmContractDescriptors: this.evmContractDescriptors
         };
     }
 
@@ -1904,9 +1680,9 @@ class Fabric extends BlockchainInterface {
      * @async
      */
     async init() {
-        let tlsInfo = this.networkUtil.isMutualTlsEnabled() ? 'mutual'
-            : (this.networkUtil.isTlsEnabled() ? 'server' : 'none');
-        let compMode = this.networkUtil.isInCompatibilityMode() ? '; Fabric v1.0 compatibility mode' : '';
+        let tlsInfo = this.network.isMutualTlsEnabled() ? 'mutual'
+            : (this.network.isTlsEnabled() ? 'server' : 'none');
+        let compMode = this.network.isInCompatibilityMode() ? '; Fabric v1.0 compatibility mode' : '';
         logger.info(`Fabric SDK version: ${this.version.toString()}; TLS: ${tlsInfo}${compMode}`);
 
         await this._initializeRegistrars(true);
@@ -1958,23 +1734,54 @@ class Fabric extends BlockchainInterface {
         }
 
         for (let settings of settingsArray) {
-            let contractDetails = this.networkUtil.getContractDetails(contractID);
+            let contractDetails = this.network.getContractDetails(contractID);
             if (!contractDetails) {
                 throw new Error(`Could not find details for contract ID ${contractID}`);
             }
 
+            // just resolve the contract ID
             settings.channel = contractDetails.channel;
             settings.chaincodeId = contractDetails.id;
             settings.chaincodeVersion = contractDetails.version;
 
+            if (!settings.chaincodeArguments) {
+                settings.chaincodeArguments = [];
+            }
+
             if (!settings.invokerIdentity) {
                 settings.invokerIdentity = this.defaultInvoker;
+            }
+
+            if (contractDetails.language === 'solidity') {
+                solidityUtil.transformTransactionSettings(contractID, this.evmContractDescriptors, this.network, settings);
             }
 
             promises.push(this._submitSingleTransaction(context, settings, timeout * 1000));
         }
 
         return await Promise.all(promises);
+    }
+
+    /**
+     * Perform required preparation for test clients, e.g. enroll clients and obtain key pairs.
+     * @param {number} number Number of test clients.
+     * @return {Promise<object[]>} Array of obtained material for test clients.
+     * @async
+     */
+    async prepareClients(number) {
+        let result = [];
+        let shared = {
+            evmContractDescriptors: this.evmContractDescriptors,
+            evmUserAddresses: this.evmUserAddresses,
+            clientMaterialStore: this.clientMaterialStore
+        };
+
+        logger.debug(`Sharing with clients: ${JSON.stringify(shared)}`);
+
+        for(let i = 0 ; i< number ; i++) {
+            result[i] = shared;
+        }
+        return result;
     }
 
     /**
@@ -1999,7 +1806,7 @@ class Fabric extends BlockchainInterface {
         }
 
         for (let settings of settingsArray) {
-            let contractDetails = this.networkUtil.getContractDetails(contractID);
+            let contractDetails = this.network.getContractDetails(contractID);
             if (!contractDetails) {
                 throw new Error(`Could not find details for contract ID ${contractID}`);
             }
@@ -2008,8 +1815,16 @@ class Fabric extends BlockchainInterface {
             settings.chaincodeId = contractDetails.id;
             settings.chaincodeVersion = contractDetails.version;
 
+            if (!settings.chaincodeArguments) {
+                settings.chaincodeArguments = [];
+            }
+
             if (!settings.invokerIdentity) {
                 settings.invokerIdentity = this.defaultInvoker;
+            }
+
+            if (contractDetails.language === 'solidity') {
+                solidityUtil.transformTransactionSettings(contractID, this.evmContractDescriptors, this.network, settings);
             }
 
             promises.push(this._submitSingleQuery(context, settings, timeout * 1000));

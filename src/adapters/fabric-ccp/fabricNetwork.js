@@ -17,9 +17,13 @@
 const yaml = require('js-yaml');
 const fs = require('fs');
 const util = require('../../comm/util.js');
+const solidityUtil = require('./fabric-solidity-utils.js');
+const networkUtil = require('./fabric-network-util.js');
+
+const logger = util.getLogger('adapters/fabric-ccp/network');
 
 /**
- * Utility class for accessing information in a Common Connection Profile configuration
+ * API for accessing information in a Common Connection Profile configuration
  * (and the Caliper specific extensions) without relying on its structure.
  *
  * @property {object} network The loaded network configuration object.
@@ -27,7 +31,9 @@ const util = require('../../comm/util.js');
  * @property {boolean} compatibilityMode Indicates whether the configuration describes a v1.0 Fabric network.
  * @property {boolean} tls Indicates whether TLS communication is configured for the network.
  * @property {boolean} mutualTls Indicates whether mutual TLS communication is configured for the network.
- * @property {Map<string, {channel:string, id:string, version:string}>} The mapping of contract IDs to chaincode details.
+ * @property {Map<string, {channel:string, id:string, version:string, language: string}>} contractMapping The mapping of contract IDs to chaincode details.
+ * @property {Map<string, string>} evmProxies The available EVM proxy contract IDs for each channel.
+ * @property {Map<string, boolean>} solidityPresent Indicates whether the channel includes Solidity contracts.
  */
 class FabricNetwork {
     /**
@@ -36,7 +42,7 @@ class FabricNetwork {
      * @param {string|object} networkConfig The relative or absolute file path, or the object itself of the Common Connection Profile settings.
      */
     constructor(networkConfig) {
-        util.assertDefined(networkConfig, '[FabricNetwork.constructor] Parameter \'networkConfig\' if undefined or null');
+        util.assertDefined(networkConfig, 'Parameter \'networkConfig\' if undefined or null');
 
         if (typeof networkConfig === 'string') {
             let configPath = util.resolvePath(networkConfig);
@@ -46,7 +52,7 @@ class FabricNetwork {
             // clone the object to prevent modification by other objects
             this.network = yaml.safeLoad(yaml.safeDump(networkConfig), {schema: yaml.DEFAULT_SAFE_SCHEMA});
         } else {
-            throw new Error('[FabricNetwork.constructor] Parameter \'networkConfig\' is neither a file path nor an object');
+            networkUtil.logAndThrow('Parameter \'networkConfig\' is neither a file path nor an object');
         }
 
         this.clientConfigs = {};
@@ -54,6 +60,8 @@ class FabricNetwork {
         this.tls = false;
         this.mutualTls = false;
         this.contractMapping = new Map();
+        this.evmProxies = new Map();
+        this.solidityPresent = new Map();
         this._validateNetworkConfiguration();
     }
 
@@ -62,75 +70,69 @@ class FabricNetwork {
     ////////////////////////////////
 
     /**
-     * Internal utility function for checking whether the given CA exists in the configuration.
-     * The function throws an error if it doesn't exist.
-     * @param {string} ca The name of the CA.
-     * @param {string} msg An optional error message that will be thrown in case of an invalid CA.
+     * Adds a chaincode description to the given channels chaincode list.
+     * @param {string} channel The name of the channel.
+     * @param {object} chaincodeObj The object describing the chaincode.
      * @private
      */
-    _assertCaExists(ca, msg) {
-        let cas = this.network.certificateAuthorities;
-        for (let c in cas) {
-            if (!cas.hasOwnProperty(c)) {
-                continue;
-            }
-
-            // we found the CA in the CAs section
-            if (c.toString() === ca) {
-                return;
-            }
-        }
-
-        // didn't find the CA
-        throw new Error(msg || `Couldn't find ${ca} in the 'certificateAuthorities' section`);
+    _addChaincodeToChannelConfig(channel, chaincodeObj) {
+        this._assertChannelExists(channel);
+        this.network.channels[channel].chaincodes.unshift(chaincodeObj);
     }
 
     /**
-     * Internal utility function for checking whether the given orderer exists in the configuration.
-     * The function throws an error if it doesn't exist.
-     * @param {string} orderer The name of the orderer.
-     * @param {string} msg An optional error message that will be thrown in case of an invalid orderer.
+     * Throws an error if the client is not present in the configuration.
+     * @param {string} client The name of the client.
      * @private
      */
-    _assertOrdererExists(orderer, msg) {
-        let orderers = this.network.orderers;
-        for (let ord in orderers) {
-            if (!orderers.hasOwnProperty(ord)) {
-                continue;
-            }
-
-            // we found the orderer in the orderers section
-            if (ord.toString() === orderer) {
-                return;
-            }
+    _assertClientExists(client) {
+        if (!this.clientConfigs[client]) {
+            networkUtil.logAndThrow(`Couldn't find ${client} in the configuration`);
         }
-
-        // didn't find the orderer
-        throw new Error(msg || `Couldn't find ${orderer} in the 'orderers' section`);
     }
 
     /**
-     * Internal utility function for checking whether the given peer exists in the configuration.
-     * The function throws an error if it doesn't exist.
+     * Throws an error if the organization is not present in the configuration.
+     * @param {string} org The name of the organization.
+     * @private
+     */
+    _assertOrgExists(org) {
+        if (!this.network.organizations[org]) {
+            networkUtil.logAndThrow(`${org} is not found in the configuration`);
+        }
+    }
+
+    /**
+     * Throws an error if the channel is not present in the configuration.
+     * @param {string} channel The name of the channel.
+     * @private
+     */
+    _assertChannelExists(channel) {
+        if (!this.network.channels[channel]) {
+            networkUtil.logAndThrow(`Couldn't find ${channel} in the configuration`);
+        }
+    }
+
+    /**
+     * Throws an error if the peer is not present in the configuration.
      * @param {string} peer The name of the peer.
-     * @param {string} msg An optional error message that will be thrown in case of an invalid peer.
      * @private
      */
-    _assertPeerExists(peer, msg) {
-        let peers = this.network.peers;
-        for (let p in peers) {
-            if (!peers.hasOwnProperty(p)) {
-                continue;
-            }
-
-            // we found the peer in the peers section
-            if (p.toString() === peer) {
-                return;
-            }
+    _assertPeerExists(peer) {
+        if (!this.network.peers[peer]) {
+            networkUtil.logAndThrow(`Couldn't find ${peer} in the configuration`);
         }
+    }
 
-        // didn't find the peer
-        throw new Error(msg || `Couldn't find ${peer} in the 'peers' section`);
+    /**
+     * Throws an error if the CA is not present in the configuration.
+     * @param {string} ca The name of the CA.
+     * @private
+     */
+    _assertCaExists(ca) {
+        if (!this.network.certificateAuthorities[ca]) {
+            networkUtil.logAndThrow(`Couldn't find ${ca} in the configuration`);
+        }
     }
 
     /**
@@ -158,7 +160,7 @@ class FabricNetwork {
 
         let clients = this.getClients();
         if (clients.size < 1) {
-            throw new Error('Network configuration error: the \'clients\' section does not contain any entries');
+            networkUtil.logAndThrow('The \'clients\' section does not contain any entries');
         }
 
         for (let client of clients) {
@@ -216,8 +218,9 @@ class FabricNetwork {
         // ============
         let channels = this.getChannels();
         if (channels.size < 1) {
-            throw new Error('Network configuration error: the \'channels\' section does not contain any entries');
+            networkUtil.logAndThrow('The \'channels\' section does not contain any entries');
         }
+
         for (let channel of channels) {
             let channelObj = this.network.channels[channel];
             let channelObjName = `network.channels.${channel}`;
@@ -237,44 +240,51 @@ class FabricNetwork {
             // ====================
             // = CHANNEL ORDERERS =
             // ====================
-            let ordererCollection = channelObj.orderers;
-
-            if (ordererCollection.length < 1) {
-                throw new Error(`'channels.${channel}.orderers' does not contain any element`);
-            }
-
-            // check whether the orderer references are valid
-            ordererCollection.forEach((orderer) => {
-                this._assertOrdererExists(orderer, `${orderer} is not a valid orderer reference in ${channel}`);
-            });
+            networkUtil.assertAllNodesExist(channelObj.orderers, Object.keys(this.network.orderers),
+                `channels.${channel}.orderers`);
 
             // =================
             // = CHANNEL PEERS =
             // =================
-            let peerCollection = channelObj.peers;
-            let peerPresent = false; // signal if we found a peer in the channel
-
-            // check whether the peer references are valid
-            for (let peer in peerCollection) {
-                if (!peerCollection.hasOwnProperty(peer)) {
-                    continue;
-                }
-
-                this._assertPeerExists(peer,
-                    `${peer.toString()} is not a valid peer reference in ${channel}`);
-                peerPresent = true;
-            }
-
-            if (!peerPresent) {
-                throw new Error(`'channels.${channel}.peers' does not contain any element`);
-            }
+            networkUtil.assertAllNodesExist(Object.keys(channelObj.peers), Object.keys(this.network.peers),
+                `channels.${channel}.peers`);
 
             // ======================
             // = CHANNEL CHAINCODES =
             // ======================
             let chaincodesCollection = channelObj.chaincodes;
             if (chaincodesCollection.size < 1) {
-                throw new Error(`'channels.${channel}.chaincodes' does not contain any elements`);
+                networkUtil.logAndThrow(`'channels.${channel}.chaincodes' does not contain any elements`);
+            }
+
+            // if there are Solidity chaincodes, insert the proxy CC into the list
+            if (chaincodesCollection.some(cc => cc.language === 'solidity')) {
+                let proxyCC = {
+                    id: 'evmcc',
+                    contractID: `${channel}.#EVM`,
+                    version: 'v0',
+                    language: 'golang',
+                    path: 'evmcc',
+                    gopath: 'src/adapters/fabric-ccp'
+                };
+
+                // set its target peers
+                if (util.checkProperty(channelObj, 'evmProxyChaincode') &&
+                    util.checkProperty(channelObj.evmProxyChaincode, 'targetPeers')) {
+                    // targets are explicitly given
+                    proxyCC.targetPeers = channelObj.evmProxyChaincode.targetPeers;
+                } else {
+                    // collect the union of target peers for solidity contracts
+                    let solidityTargets = new Set();
+                    for (let cc of chaincodesCollection.filter(c => c.language === 'solidity')) {
+                        this.getTargetPeersOfChaincodeOfChannel(cc, channel).forEach(t => solidityTargets.add(t));
+                    }
+
+                    proxyCC.targetPeers = Array.from(solidityTargets);
+                }
+
+                this._addChaincodeToChannelConfig(channel, proxyCC);
+                this.evmProxies.set(channel, proxyCC.contractID);
             }
 
             // to check that there's no duplication
@@ -282,41 +292,90 @@ class FabricNetwork {
 
             chaincodesCollection.forEach((cc, index) => {
                 // 'metadataPath', 'targetPeers' and 'init' is optional
-                util.assertDefined(cc, `The element 'channels.${channel}.chaincodes[${index}]' is undefined or null`);
+                let ccObjName = `channels.${channel}.chaincodes[${index}]`;
+                util.assertDefined(cc, `The element '${ccObjName}' is undefined or null`);
 
                 // other attributes are optional if the chaincode is already installed and instantiated
                 // this will be know at install/instantiate time
-                util.assertAllProperties(cc, `channels.${channel}.chaincodes[${index}]`, 'id', 'version');
+                util.assertAllProperties(cc, ccObjName, 'id', 'version');
 
                 let idAndVersion = `${cc.id}@${cc.version}`;
+                ccObjName = `channels.${channel}.chaincodes.${idAndVersion}`; // better than an index
+
                 if (chaincodeSet.has(idAndVersion)) {
-                    throw new Error(`${idAndVersion} is defined more than once in the configuration`);
+                    networkUtil.logAndThrow(`${idAndVersion} in ${channel} is defined more than once`);
                 }
-
-                let contractID;
-                if (util.checkProperty(cc, 'contractID')) {
-                    contractID = cc.contractID;
-                } else {
-                    contractID = cc.id;
-                }
-
-                if (this.contractMapping.has(contractID)) {
-                    throw new Error(`Contract ID ${contractID} is used more than once in the configuration`);
-                }
-
-                // add the mapping for the contract ID
-                this.contractMapping.set(contractID, {channel: channel, id: cc.id, version: cc.version});
 
                 chaincodeSet.add(idAndVersion);
 
-                // if target peers are defined, then check the validity of the references
-                if (!util.checkProperty(cc, 'targetPeers')) {
-                    return;
+                let contractID = util.checkProperty(cc, 'contractID') ? cc.contractID : cc.id;
+                if (this.contractMapping.has(contractID)) {
+                    networkUtil.logAndThrow(`Contract ID ${contractID} is used more than once`);
                 }
 
-                for (let tp of cc.targetPeers) {
-                    this._assertPeerExists(tp,
-                        `${tp} is not a valid peer reference in 'channels.${channel}.chaincodes[${index}].targetPeers'`);
+                // add the mapping for the contract ID
+                this.contractMapping.set(contractID, {channel: channel, id: cc.id, version: cc.version, language: cc.language});
+
+                if (util.checkProperty(cc, 'targetPeers')) {
+                    networkUtil.assertAllNodesExist(cc.targetPeers, Object.keys(this.network.peers),
+                        `channels.${channel}.chaincodes.${idAndVersion}.targetPeers`);
+                }
+
+                ///////////////////
+                // EVM CONTRACTS //
+                ///////////////////
+
+                // TODO: OBSOLETE
+                // if (util.checkProperty(cc, 'evmProxy') && cc.evmProxy) {
+                //     this.evmProxies.set(channel, contractID);
+                // }
+
+                if (util.checkProperty(cc, 'language') && cc.language === 'solidity') {
+                    this.solidityPresent.set(channel, true);
+
+                    // either the path is needed for deployment, or the bytecode with the method signatures,
+                    // or the address with the method signatures
+                    if (util.checkProperty(cc, 'path')) {
+                        util.assertProperty(cc, ccObjName, 'deployerIdentity');
+
+                        if (util.checkProperty(cc, 'bytecode')) {
+                            logger.warn(`${contractID}.bytecode will be ignored since a path is provided`);
+                        }
+
+                        if (util.checkProperty(cc, 'address')) {
+                            logger.warn(`${contractID}.address will be ignored since a path is provided`);
+                        }
+
+                        if (util.checkProperty(cc, 'methodSignatures')) {
+                            logger.warn(`${contractID}.methodSignatures will be ignored and will be acquired from the compiler since a path is provided`);
+                        }
+                    } else if (util.checkProperty(cc, 'bytecode')) {
+                        util.assertAllProperties(cc, ccObjName, 'deployerIdentity', 'methodSignatures');
+                        solidityUtil.checkMethodSignatures(contractID, cc.methodSignatures);
+
+                        if (util.checkProperty(cc, 'address')) {
+                            logger.warn(`${contractID}.address will be ignored since bytecode is provided`);
+                        }
+
+                        // the bytecode can reside in a file, or embedded in the configuration
+                        if (util.checkProperty(cc.bytecode, 'path')) {
+                            let resolvedPath = util.resolvePath(cc.bytecode.path);
+                            if (!fs.existsSync(resolvedPath)) {
+                                throw new Error(`File specified at '${ccObjName}.bytecode.path' does not exist: ${resolvedPath}`);
+                            }
+                        } else {
+                            util.assertProperty(cc.bytecode, ccObjName, 'content');
+                        }
+                    } else {
+                        util.assertAllProperties(cc, ccObjName, 'address', 'methodSignatures');
+                        solidityUtil.checkMethodSignatures(contractID, cc.methodSignatures);
+                    }
+                }
+
+                // if target peers are defined, then check the validity of the references
+                if (util.checkProperty(cc, 'targetPeers')) {
+                    networkUtil.assertAllNodesExist(cc.targetPeers, Object.keys(this.network.peers),
+                        `channels.${channel}.chaincodes[${index}].targetPeers`);
                 }
             });
         }
@@ -326,7 +385,7 @@ class FabricNetwork {
         // =================
         let orgs = this.getOrganizations();
         if (orgs.size < 1) {
-            throw new Error('\'organizations\' section does not contain any entries');
+            networkUtil.logAndThrow('The \'organizations\' section does not contain any entries');
         }
 
         for (let org of orgs) {
@@ -354,27 +413,17 @@ class FabricNetwork {
             // ======================
             // = ORGANIZATION PEERS =
             // ======================
-            if (orgObj.peers.length < 1) {
-                throw new Error(`'organizations.${org}.peers' does not contain any element`);
-            }
-
-            // verify peer references
-            for (let peer of orgObj.peers) {
-                this._assertPeerExists(peer, `${peer} is not a valid peer reference in 'organizations.${org}.peers'`);
-            }
+            networkUtil.assertAllNodesExist(orgObj.peers, Object.keys(this.network.peers),
+                `organizations.${org}.peers`);
 
             // ===================
             // = ORGANIZATION CA =
             // ===================
 
             // if CAs are specified, check their validity
-            if (!util.checkProperty(orgObj, 'certificateAuthorities')) {
-                continue;
-            }
-
-            let caCollection = orgObj.certificateAuthorities;
-            for (let ca of caCollection) {
-                this._assertCaExists(ca, `${ca} is not a valid CA reference in 'organizations.${org}'.certificateAuthorities`);
+            if (util.checkProperty(orgObj, 'certificateAuthorities')) {
+                networkUtil.assertAllNodesExist(orgObj.certificateAuthorities, Object.keys(this.network.certificateAuthorities),
+                    `organizations.${org}'.certificateAuthorities`);
             }
         }
 
@@ -383,7 +432,7 @@ class FabricNetwork {
         // ============
         let orderers = this.getOrderers();
         if (orderers.size < 1) {
-            throw new Error('\'orderers\' section does not contain any entries');
+            networkUtil.logAndThrow('The \'orderers\' section does not contain any entries');
         }
 
         for (let orderer of orderers) {
@@ -411,8 +460,9 @@ class FabricNetwork {
         // =========
         let peers = this.getPeers();
         if (peers.size < 1) {
-            throw new Error('\'peers\' section does not contain any entries');
+            networkUtil.logAndThrow('The \'peers\' section does not contain any entries');
         }
+
         for (let peer of peers) {
             // 'grpcOptions' is optional
             util.assertProperty(this.network.peers, 'network.peers', peer);
@@ -448,7 +498,7 @@ class FabricNetwork {
         if (this.compatibilityMode) {
             for (let peer of peers) {
                 if (!util.checkProperty(this.network.peers[peer], 'eventUrl')) {
-                    throw new Error(`${peer} doesn't provide an event URL in compatibility mode`);
+                    networkUtil.logAndThrow(`${peer} doesn't provide an event URL in compatibility mode`);
                 }
             }
         }
@@ -492,7 +542,7 @@ class FabricNetwork {
         // find the not provided CAs, i.e., requiredCas \ providedCas set operation
         let notProvidedCas = new Set([...requiredCas].filter(ca => !providedCas.has(ca)));
         if (notProvidedCas.size > 0) {
-            throw new Error(`The following org's CAs and their registrars are required for user management, but are not provided: ${Array.from(notProvidedCas).join(', ')}`);
+            networkUtil.logAndThrow(`The following org's CAs and their registrars are required for user management, but are not provided: ${Array.from(notProvidedCas).join(', ')}`);
         }
 
         // ==============================
@@ -510,7 +560,7 @@ class FabricNetwork {
                 util.assertAnyProperty(ordererObj.tlsCACerts, `${ordererObjName}.tlsCACerts`, 'path', 'pem');
 
                 if (!ordererObj.url.startsWith('grpcs://')) {
-                    throw new Error(`${orderer} doesn't use the grpcs protocol, but TLS is configured on other nodes`);
+                    networkUtil.logAndThrow(`${orderer} doesn't use the grpcs protocol, but TLS is configured on other nodes`);
                 }
             }
 
@@ -523,12 +573,12 @@ class FabricNetwork {
                 util.assertAnyProperty(peerObj.tlsCACerts, `${peerObjName}.tlsCACerts`, 'path', 'pem');
 
                 if (!peerObj.url.startsWith('grpcs://')) {
-                    throw new Error(`${peer} doesn't use the grpcs protocol, but TLS is configured on other nodes`);
+                    networkUtil.logAndThrow(`${peer} doesn't use the grpcs protocol, but TLS is configured on other nodes`);
                 }
 
                 // check peer URLs
                 if (this.compatibilityMode && !peerObj.eventUrl.startsWith('grpcs://')) {
-                    throw new Error(`${peer} doesn't use the grpcs protocol for eventing, but TLS is configured on other nodes`);
+                    networkUtil.logAndThrow(`${peer} doesn't use the grpcs protocol for eventing, but TLS is configured on other nodes`);
                 }
             }
 
@@ -543,7 +593,7 @@ class FabricNetwork {
                     util.assertAnyProperty(caObj.tlsCACerts, `${caObjName}.tlsCACerts`, 'path', 'pem');
 
                     if (!caObj.url.startsWith('https://')) {
-                        throw new Error(`${ca} doesn't use the https protocol, but TLS is configured on other nodes`);
+                        networkUtil.logAndThrow(`${ca} doesn't use the https protocol, but TLS is configured on other nodes`);
                     }
                 }
             }
@@ -553,54 +603,12 @@ class FabricNetwork {
 
         // mutual TLS requires server-side TLS
         if (this.mutualTls && !this.tls) {
-            throw new Error('Mutual TLS is configured without using TLS on network nodes');
+            networkUtil.logAndThrow('Mutual TLS is configured without using TLS on network nodes');
         }
 
         if (this.mutualTls && this.compatibilityMode) {
-            throw new Error('Mutual TLS is not supported for Fabric v1.0');
+            networkUtil.logAndThrow('Mutual TLS is not supported for Fabric v1.0');
         }
-    }
-
-    /**
-     * Gets the admin crypto materials for the given organization.
-     * @param {string} org The name of the organization.
-     * @returns {{privateKeyPEM: Buffer, signedCertPEM: Buffer}} The object containing the signing key and cert in PEM format.
-     */
-    getAdminCryptoContentOfOrganization(org) {
-        let orgObject = this.network.organizations[org];
-
-        // if either is missing, the result is undefined
-        if (!util.checkAllProperties(orgObject, 'adminPrivateKey', 'signedCert')) {
-            return undefined;
-        }
-
-        let privateKey = orgObject.adminPrivateKey;
-        let signedCert = orgObject.signedCert;
-
-        let privateKeyPEM;
-        let signedCertPEM;
-
-        if (util.checkProperty(privateKey, 'path')) {
-            privateKeyPEM = fs.readFileSync(util.resolvePath(privateKey.path));
-        } else {
-            privateKeyPEM = privateKey.pem;
-        }
-
-        if (util.checkProperty(signedCert, 'path')) {
-            signedCertPEM = fs.readFileSync(util.resolvePath(signedCert.path));
-        } else {
-            signedCertPEM = signedCert.pem;
-        }
-
-        // if either is missing, the result is undefined
-        if (!privateKeyPEM || !signedCertPEM) {
-            return undefined;
-        }
-
-        return {
-            privateKeyPEM: privateKeyPEM,
-            signedCertPEM: signedCertPEM
-        };
     }
 
     //////////////////////
@@ -608,16 +616,23 @@ class FabricNetwork {
     //////////////////////
 
     /**
+     * Gets the admin crypto materials for the given organization.
+     * @param {string} org The name of the organization.
+     * @returns {{privateKeyPEM: Buffer, signedCertPEM: Buffer}} The object containing the signing key and cert in PEM format.
+     */
+    getAdminCryptoContentOfOrganization(org) {
+        this._assertOrgExists(org);
+        return networkUtil.getAdminCryptoContentOfOrganization(this.network.organizations[org]);
+    }
+
+    /**
      * Gets the affiliation of the given client.
      * @param {string} client The client name.
-     * @returns {string|undefined} The affiliation or 'undefined' if omitted from the configuration.
+     * @returns {string} The affiliation or 'undefined' if omitted from the configuration.
      */
-    getAffiliationOfUser(client) {
-        if (util.checkProperty(this.clientConfigs[client].client, 'affiliation')) {
-            return this.clientConfigs[client].client.affiliation;
-        }
-
-        return undefined;
+    getAffiliationOfClient(client) {
+        this._assertClientExists(client);
+        return networkUtil.getAffiliationOfClient(this.clientConfigs[client].client);
     }
 
     /**
@@ -648,12 +663,9 @@ class FabricNetwork {
      * @param {string} client The client name.
      * @returns {{name: string, value: string, ecert: boolean}[]} The attributes or empty array if omitted from the configuration.
      */
-    getAttributesOfUser(client) {
-        if (util.checkProperty(this.clientConfigs[client].client, 'attributes')) {
-            return this.clientConfigs[client].client.attributes;
-        }
-
-        return [];
+    getAttributesOfClient(client) {
+        this._assertClientExists(client);
+        return networkUtil.getAttributesOfClient(this.clientConfigs[client].client);
     }
 
     /**
@@ -681,27 +693,18 @@ class FabricNetwork {
      * @returns {string} The CA name.
      */
     getCertificateAuthorityOfOrganization(org) {
-        if (!util.checkProperty(this.network.organizations[org], 'certificateAuthorities') ||
-            this.network.organizations[org].certificateAuthorities.size < 1) {
-            return undefined;
-        }
-
-        // TODO: only one CA per org is supported
-        return this.network.organizations[org].certificateAuthorities[0];
+        this._assertOrgExists(org);
+        return networkUtil.getCertificateAuthorityOfOrganization(this.network.organizations[org]);
     }
 
     /**
      * Gets the chaincode names and versions belonging to the given channel.
      * @param {string} channel The channel name.
-     * @returns {Set<{id: string, version: string}>} The set of chaincode names.
+     * @returns {Set<{id: string, version: string, language: string}>} The set of chaincode information.
      */
     getChaincodesOfChannel(channel) {
-        return new Set(this.network.channels[channel].chaincodes.map(cc => {
-            return {
-                id: cc.id,
-                version: cc.version
-            };
-        }));
+        this._assertChannelExists(channel);
+        return networkUtil.getAllChaincodesOfChannel(this.network.channels[channel]);
     }
 
     /**
@@ -729,6 +732,7 @@ class FabricNetwork {
      * @return {string[]} The array of channel names the peer belongs to.
      */
     getChannelsOfPeer(peer) {
+        this._assertPeerExists(peer);
         let result = [...this.getChannels()].filter(c => this.getPeersOfChannel(c).has(peer));
 
         if (result.length === 0) {
@@ -744,33 +748,8 @@ class FabricNetwork {
      * @returns {{privateKeyPEM: Buffer, signedCertPEM: Buffer}} The object containing the signing key and cert.
      */
     getClientCryptoContent(client) {
-        let clientObject = this.network.clients[client].client;
-
-        if (!util.checkAllProperties(clientObject, 'clientPrivateKey', 'clientSignedCert')) {
-            return undefined;
-        }
-
-        let privateKey = clientObject.clientPrivateKey;
-        let signedCert = clientObject.clientSignedCert;
-        let privateKeyPEM;
-        let signedCertPEM;
-
-        if (util.checkProperty(privateKey, 'path')) {
-            privateKeyPEM = fs.readFileSync(util.resolvePath(privateKey.path));
-        } else {
-            privateKeyPEM = privateKey.pem;
-        }
-
-        if (util.checkProperty(signedCert, 'path')) {
-            signedCertPEM = fs.readFileSync(util.resolvePath(signedCert.path));
-        } else {
-            signedCertPEM = signedCert.pem;
-        }
-
-        return {
-            privateKeyPEM: privateKeyPEM,
-            signedCertPEM: signedCertPEM
-        };
+        this._assertClientExists(client);
+        return networkUtil.getClientCryptoContent(this.network.clients[client].client);
     }
 
     /**
@@ -779,11 +758,8 @@ class FabricNetwork {
      * @returns {string} The enrollment secret.
      */
     getClientEnrollmentSecret(client) {
-        if (util.checkProperty(this.network.clients[client].client, 'enrollmentSecret')) {
-            return this.network.clients[client].client.enrollmentSecret;
-        }
-
-        return undefined;
+        this._assertClientExists(client);
+        return networkUtil.getClientEnrollmentSecret(this.network.clients[client].client);
     }
 
     /**
@@ -791,9 +767,10 @@ class FabricNetwork {
      *
      * Use it only when you need access to the client objects itself (which is rare)!!
      * @param {string} client The client name.
-     * @returns {{version: string, client: object}} The client object.
+     * @returns {object} The client object.
      */
     getClientObject(client) {
+        this._assertClientExists(client);
         return this.network.clients[client].client;
     }
 
@@ -802,18 +779,18 @@ class FabricNetwork {
      * @returns {Set<string>} The set of client names.
      */
     getClients() {
-        let result = new Set();
-        let clients = this.network.clients;
-
-        for (let key in clients) {
-            if (!clients.hasOwnProperty(key)) {
-                continue;
-            }
-
-            result.add(key.toString());
-        }
-
-        return result;
+        return new Set(Object.keys(this.network.clients));
+        // let clients = this.network.clients;
+        //
+        // for (let key in clients) {
+        //     if (!clients.hasOwnProperty(key)) {
+        //         continue;
+        //     }
+        //
+        //     result.add(key.toString());
+        // }
+        //
+        // return result;
     }
 
     /**
@@ -822,6 +799,7 @@ class FabricNetwork {
      * @returns {Set<string>} The set of client names.
      */
     getClientsOfOrganization(org) {
+        this._assertOrgExists(org);
         let clients = this.getClients();
         let result = new Set();
 
@@ -837,10 +815,24 @@ class FabricNetwork {
     /**
      * Gets the details (channel, id and version) for the given contract.
      * @param {string} contractID The unique ID of the contract.
-     * @return {{channel: string, id: string, version: string}} The details of the contract.
+     * @return {{channel: string, id: string, version: string, language: string}} The details of the contract.
      */
     getContractDetails(contractID) {
         return this.contractMapping.get(contractID);
+    }
+
+    /**
+     * Gets the contract ID of a chaincode of a given channel.
+     * @param {string} channel The name of the channel.
+     * @param {string} id The ID of the chaincode.
+     * @param {string} version The version of the chaincode.
+     * @return {string} The contract ID of the chaincode (which is the normal ID, if a contract ID is not specified).
+     */
+    getContractIdOfChaincodeOfChannel(channel, id, version) {
+        this._assertChannelExists(channel);
+        let channelObj = this.network.channels[channel];
+        let ccObj = networkUtil.getChaincodeOfChannel(channelObj, id, version);
+        return networkUtil.getContractIdOfChaincode(ccObj);
     }
 
     /**
@@ -848,7 +840,6 @@ class FabricNetwork {
      * @param {string} channel The name of the channel.
      * @param {{id: string, version: string}} chaincodeInfo The chaincode name and version.
      * @return {object} The assembled endorsement policy.
-     * @private
      */
     getDefaultEndorsementPolicy(channel, chaincodeInfo) {
         let targetPeers = this.getTargetPeersOfChaincodeOfChannel(chaincodeInfo, channel);
@@ -858,29 +849,33 @@ class FabricNetwork {
             targetOrgs.add(this.getOrganizationOfPeer(peer));
         }
 
-        let orgArray = Array.from(targetOrgs).sort();
+        return networkUtil.getEndorsementPolicyForOrganizations(Array.from(targetOrgs).sort()
+            .map(o => this.getMspIdOfOrganization(o)));
+    }
 
-        let policy = {
-            identities: [],
-            policy: {}
-        };
+    /**
+     * Gets the EVM proxy chaincode for the given channel.
+     * @param {string} channel The name of the channel.
+     * @return {string} The contract ID of the EVM proxy chaincode, or undefined if not found.
+     */
+    getEvmProxyChaincodeOfChannel(channel) {
+        return this.evmProxies.get(channel);
+    }
 
-        policy.policy[`${orgArray.length}-of`] = [];
+    /**
+     * Gets the first client of the given organization.
+     * @param {string} org The name of the organization.
+     * @return {string} The name of the client.
+     */
+    getFirstClientOfOrganization(org) {
+        this._assertOrgExists(org);
+        let clients = this.getClientsOfOrganization(org);
 
-        for (let i = 0; i < orgArray.length; ++i) {
-            policy.identities[i] = {
-                role: {
-                    name: 'member',
-                    mspId: this.getMspIdOfOrganization(orgArray[i])
-                }
-            };
-
-            policy.policy[`${orgArray.length}-of`][i] = {
-                'signed-by': i
-            };
+        if (clients.size < 1) {
+            throw new Error(`${org} doesn't have any clients`);
         }
 
-        return policy;
+        return Array.from(clients)[0];
     }
 
     /**
@@ -889,14 +884,8 @@ class FabricNetwork {
      * @return {object} An object containing the GRPC options of the peer.
      */
     getGrpcOptionsOfPeer(peer) {
-        let peerObj = this.network.peers[peer];
-        let grpcObj = peerObj.grpcOptions;
-
-        if (util.checkProperty(peerObj, 'tlsCACerts')) {
-            grpcObj.pem = this.getTlsCaCertificateOfPeer(peer);
-        }
-
-        return grpcObj;
+        this._assertPeerExists(peer);
+        return networkUtil.getGrpcOptionsOfPeer(this.network.peers[peer]);
     }
 
     /**
@@ -905,7 +894,8 @@ class FabricNetwork {
      * @returns {string} The MSP ID.
      */
     getMspIdOfOrganization(org) {
-        return this.network.organizations[org].mspid;
+        this._assertOrgExists(org);
+        return networkUtil.getMspIdOfOrganization(this.network.organizations[org]);
     }
 
     /**
@@ -931,18 +921,7 @@ class FabricNetwork {
      * @returns {Set<string>} The set of orderer names.
      */
     getOrderers() {
-        let result = new Set();
-        let orderers = this.network.orderers;
-
-        for (let key in orderers) {
-            if (!orderers.hasOwnProperty(key)) {
-                continue;
-            }
-
-            result.add(key.toString());
-        }
-
-        return result;
+        return new Set(Object.keys(this.network.orderers));
     }
 
     /**
@@ -951,7 +930,8 @@ class FabricNetwork {
      * @returns {Set<string>} The set of orderer names.
      */
     getOrderersOfChannel(channel) {
-        return new Set(this.network.channels[channel].orderers);
+        this._assertChannelExists(channel);
+        return networkUtil.getOrderersOfChannel(this.network.channels[channel]);
     }
 
     /**
@@ -960,6 +940,7 @@ class FabricNetwork {
      * @return {string} The name of the organization.
      */
     getOrganizationOfCertificateAuthority(ca) {
+        this._assertCaExists(ca);
         let orgs = this.getOrganizations();
         for (let org of orgs) {
             if (this.network.organizations[org].certificateAuthorities.includes(ca)) {
@@ -967,7 +948,7 @@ class FabricNetwork {
             }
         }
 
-        return undefined;
+        networkUtil.logAndThrow(`Couldn't find the owner organization of ${ca}`);
     }
 
     /**
@@ -976,15 +957,17 @@ class FabricNetwork {
      * @returns {string} The organization name.
      */
     getOrganizationOfClient(client) {
-        return this.clientConfigs[client].client.organization;
+        this._assertClientExists(client);
+        return networkUtil.getOrganizationOfClient(this.clientConfigs[client].client);
     }
 
     /**
-     * Gets the origanization name in which the given peer belongs to.
+     * Gets the organization name in which the given peer belongs to.
      * @param {string} peer The peer name.
      * @returns {string} The organization name.
      */
     getOrganizationOfPeer(peer) {
+        this._assertPeerExists(peer);
         let orgs = this.getOrganizations();
         for (let org of orgs) {
             let peers = this.getPeersOfOrganization(org);
@@ -993,7 +976,7 @@ class FabricNetwork {
             }
         }
 
-        throw new Error('Peer ' + peer + ' not found in any organization');
+        throw new Error(`Couldn't find the owner organization of ${peer}`);
     }
 
     /**
@@ -1001,18 +984,7 @@ class FabricNetwork {
      * @returns {Set<string>} The set of organization names.
      */
     getOrganizations() {
-        let result = new Set();
-        let orgs = this.network.organizations;
-
-        for (let key in orgs) {
-            if (!orgs.hasOwnProperty(key)) {
-                continue;
-            }
-
-            result.add(key.toString());
-        }
-
-        return result;
+        return new Set(Object.keys(this.network.organizations));
     }
 
     /**
@@ -1021,6 +993,7 @@ class FabricNetwork {
      * @returns {Set<string>} The set of organization names.
      */
     getOrganizationsOfChannel(channel) {
+        this._assertChannelExists(channel);
         let peers = this.getPeersOfChannel(channel);
         let result = new Set();
 
@@ -1037,7 +1010,13 @@ class FabricNetwork {
      * @return {string} The event URL of the peer.
      */
     getPeerEventUrl(peer) {
-        return this.network.peers[peer].eventUrl;
+        this._assertPeerExists(peer);
+
+        if (!this.isInCompatibilityMode()) {
+            networkUtil.logAndThrow('Peer event URLs are only available in Fabric v1.0 compatibility mode');
+        }
+
+        return networkUtil.getPeerEventUrl(this.network.peers[peer]);
     }
 
     /**
@@ -1046,20 +1025,15 @@ class FabricNetwork {
      * @return {string} The name of the peer.
      */
     getPeerNameForAddress(address) {
-        let peers = this.network.peers;
-        for (let peer in peers) {
-            if (!peers.hasOwnProperty(peer)) {
-                continue;
-            }
-
+        for (let peer of this.getPeers()) {
             // remove protocol from address in the config
-            let url = peers[peer].url.replace(/(^\w+:|^)\/\//, '');
+            let url = networkUtil.getCleanUrlOfPeer(this.network.peers[peer]);
             if (url === address) {
-                return peer.toString();
+                return peer;
             }
         }
 
-        return undefined;
+        networkUtil.logAndThrow(`Couldn't find the peer with address of ${address}`);
     }
 
     /**
@@ -1068,8 +1042,7 @@ class FabricNetwork {
      * @return {string} The name of the peer.
      */
     getPeerNameOfEventHub(eventHub) {
-        let peerAddress = eventHub.getPeerAddr();
-        return this.getPeerNameForAddress(peerAddress);
+        return this.getPeerNameForAddress(eventHub.getPeerAddr());
     }
 
     /**
@@ -1078,18 +1051,7 @@ class FabricNetwork {
      * @returns {Set<string>} The set of peer names.
      */
     getPeers() {
-        let result = new Set();
-        let peers = this.network.peers;
-
-        for (let peerKey in peers) {
-            if (!peers.hasOwnProperty(peerKey)) {
-                continue;
-            }
-
-            result.add(peerKey.toString());
-        }
-
-        return result;
+        return new Set(Object.keys(this.network.peers));
     }
 
     /**
@@ -1098,18 +1060,8 @@ class FabricNetwork {
      * @returns {Set<string>} The set of peer names.
      */
     getPeersOfChannel(channel) {
-        let peers = this.network.channels[channel].peers;
-        let result = new Set();
-
-        for (let key in peers) {
-            if (!peers.hasOwnProperty(key)) {
-                continue;
-            }
-
-            result.add(key.toString());
-        }
-
-        return result;
+        this._assertChannelExists(channel);
+        return networkUtil.getPeersOfChannel(this.network.channels[channel]);
     }
 
     /**
@@ -1118,7 +1070,8 @@ class FabricNetwork {
      * @returns {Set<string>} The set of peer names.
      */
     getPeersOfOrganization(org) {
-        return new Set(this.network.organizations[org].peers);
+        this._assertOrgExists(org);
+        return networkUtil.getPeersOfOrganization(this.network.organizations[org]);
     }
 
     /**
@@ -1128,6 +1081,9 @@ class FabricNetwork {
      * @returns {Set<string>} The set of peer names.
      */
     getPeersOfOrganizationAndChannel(org, channel) {
+        this._assertChannelExists(channel);
+        this._assertOrgExists(org);
+
         let peersInOrg = this.getPeersOfOrganization(org);
         let peersInChannel = this.getPeersOfChannel(channel);
 
@@ -1141,14 +1097,19 @@ class FabricNetwork {
      * @returns {{enrollId: string, enrollSecret: string}} The enrollment ID and secret of the registrar.
      */
     getRegistrarOfOrganization(org) {
+        this._assertOrgExists(org);
         let ca = this.getCertificateAuthorityOfOrganization(org);
+        return ca ? networkUtil.getRegistrarOfCertificateAuthority(this.network.certificateAuthorities[ca]) : undefined;
+    }
 
-        if (!ca || !util.checkProperty(this.network.certificateAuthorities[ca], 'registrar')) {
-            return undefined;
-        }
-
-        // TODO: only one registrar per CA is supported
-        return this.network.certificateAuthorities[ca].registrar[0];
+    /**
+     * Gets the peer names on which chaincodes of the given channel should be installed and instantiated.
+     * @param {string} channel The channel name.
+     * @returns {Set<string>} The set of peer names.
+     */
+    getTargetPeersOfChannel(channel) {
+        this._assertChannelExists(channel);
+        return networkUtil.getTargetPeersOfChannel(this.network.channels[channel]);
     }
 
     /**
@@ -1158,69 +1119,17 @@ class FabricNetwork {
      * @returns {Set<string>} The set of peer names.
      */
     getTargetPeersOfChaincodeOfChannel(chaincodeInfo, channel) {
-        let cc = this.network.channels[channel].chaincodes.find(
+        this._assertChannelExists(channel);
+
+        let channelObj = this.network.channels[channel];
+        let ccObj =channelObj.chaincodes.find(
             cc => cc.id === chaincodeInfo.id && cc.version === chaincodeInfo.version);
 
-        util.assertDefined(cc, `Could not find the following chaincode in the configuration: ${chaincodeInfo.id}@${chaincodeInfo.version}`);
-        // targets are explicitly defined
-        if (util.checkProperty(cc, 'targetPeers')) {
-            return new Set(cc.targetPeers);
+        if (!ccObj) {
+            networkUtil.logAndThrow(`Could not find ${chaincodeInfo.id}@${chaincodeInfo.version} in ${channel}'s configuration`);
         }
 
-        // we need to gather the target peers from the channel's peer section
-        // based on their provided functionality (endorsing and cc query)
-        let results = new Set();
-        let peers = this.network.channels[channel].peers;
-        for (let key in peers) {
-            if (!peers.hasOwnProperty(key)) {
-                continue;
-            }
-
-            let peer = peers[key];
-            // if only the peer name is present in the config, then it is a target based on the default values
-            if (!util.checkDefined(peer)) {
-                results.add(key.toString());
-            }
-
-            // the default value of 'endorsingPeer' is true, or it's explicitly set to true
-            if (!util.checkProperty(peer, 'endorsingPeer') ||
-                (util.checkProperty(peer, 'endorsingPeer') && peer.endorsingPeer)) {
-                results.add(key.toString());
-                continue;
-            }
-
-            // the default value of 'chaincodeQuery' is true, or it's explicitly set to true
-            if (!util.checkProperty(peer, 'chaincodeQuery') ||
-                (util.checkProperty(peer, 'chaincodeQuery') && peer.chaincodeQuery)) {
-                results.add(key.toString());
-            }
-        }
-
-        return results;
-    }
-
-    /**
-     * Gets the TLS CA certificate of the given peer.
-     * @param {string} peer The name of the peer.
-     * @return {string} The PEM encoded CA certificate.
-     */
-    getTlsCaCertificateOfPeer(peer) {
-        let peerObject = this.network.peers[peer];
-
-        if (!util.checkProperty(peerObject, 'tlsCACerts')) {
-            return undefined;
-        }
-
-        let tlsCACert = peerObject.tlsCACerts;
-        let tlsPEM;
-
-        if (util.checkProperty(tlsCACert, 'path')) {
-            tlsPEM = fs.readFileSync(util.resolvePath(tlsCACert.path)).toString();
-        } else {
-            tlsPEM = tlsCACert.pem;
-        }
-
-        return tlsPEM;
+        return networkUtil.getTargetPeersOfChaincode(ccObj) || this.getTargetPeersOfChannel(channel);
     }
 
     /**
@@ -1231,24 +1140,27 @@ class FabricNetwork {
      * @return {Map<string, Buffer>} The map of attribute names to byte arrays.
      */
     getTransientMapOfChaincodeOfChannel(chaincode, channel) {
-        let map = {};
-        let cc = this.network.channels[channel].chaincodes.find(
+        this._assertChannelExists(channel);
+
+        let channelObj = this.network.channels[channel];
+        let chaincodeObj = channelObj.chaincodes.find(
             cc => cc.id === chaincode.id && cc.version === chaincode.version);
 
-        if (!util.checkProperty(cc, 'initTransientMap')) {
-            return map;
+        if (!chaincodeObj) {
+            networkUtil.logAndThrow(`Couldn't find ${chaincode.id}@${chaincode.version} in ${channel}'s configuration`);
         }
 
-        for (let key in cc.initTransientMap) {
-            if (!cc.initTransientMap.hasOwnProperty(key)) {
-                continue;
-            }
+        return networkUtil.getTransientMapOfChaincode(chaincodeObj);
+    }
 
-            let value = cc.initTransientMap[key];
-            map[key.toString()] = Buffer.from(value.toString());
-        }
-
-        return map;
+    /**
+     * Indicates whether Solidity smart contracts are used in the configuration.
+     * @param {string} channel If specified, then the presence of solidity will be checked on the channel-level.
+     * @return {boolean} True if Solidity smart contracts are present.
+     */
+    isSolidityUsed(channel) {
+        return channel ? (this.solidityPresent.has(channel) && this.solidityPresent.get(channel))
+            : this.solidityPresent.size > 0;
     }
 
     /**

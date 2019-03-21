@@ -73,8 +73,8 @@ function _formatter(options){
     return  options.timestamp() + ' - ' +
         options.level.toUpperCase() +
         ' ' +(options.message ? options.message : '') +
-        (options.meta && Object.keys(options.meta).length ? '\n\t' + JSON.stringify(options.meta) : ' ') +
-        '\r\n';
+        (options.meta && Object.keys(options.meta).length ? '\n\t' + JSON.stringify(options.meta) : ' ');// +
+//        '\r\n';
 }
 
 /**
@@ -90,7 +90,8 @@ function _createDefaultLogger() {
     winstonOptions.transports.push(new (winston.transports.Console)({
         name: 'console',
         level: 'info',
-        handleExceptions: true
+        handleExceptions: true,
+        colorize: true
     }));
 
     let fileName = 'log/caliper-%DATE%.log';
@@ -154,7 +155,8 @@ function _createConfiguredLogger(logConfig) {
             winstonOptions.transports.push(new (winston.transports.Console)({
                 name: target.toString(),
                 level: targetSettings.level,
-                handleExceptions: true
+                handleExceptions: true,
+                colorize: true
             }));
             break;
         }

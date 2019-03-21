@@ -52,7 +52,7 @@ services:
       - ORDERER_GENERAL_TLS_CERTIFICATE=/etc/hyperledger/msp/orderer/tls/server.crt
       - ORDERER_GENERAL_TLS_ROOTCAS=[/etc/hyperledger/msp/orderer/tls/ca.crt, /etc/hyperledger/msp/peerOrg1/tls/ca.crt, /etc/hyperledger/msp/peerOrg2/tls/ca.crt]
       - ORDERER_GENERAL_TLS_CLIENTAUTHREQUIRED=true
-        - ORDERER_GENERAL_TLS_CLIENTROOTCAS=[/etc/hyperledger/msp/caOrg1/ca.org1.example.com-cert.pem, /etc/hyperledger/msp/caOrg2/ca.org2.example.com-cert.pem, /etc/hyperledger/msp/caOrderer/ca.example.com-cert.pem]
+      - ORDERER_GENERAL_TLS_CLIENTROOTCAS=[/etc/hyperledger/msp/caOrg1/ca.org1.example.com-cert.pem, /etc/hyperledger/msp/caOrg2/ca.org2.example.com-cert.pem, /etc/hyperledger/msp/caOrderer/ca.example.com-cert.pem]
     working_dir: /opt/gopath/src/github.com/hyperledger/fabric
     command: orderer
     ports:

@@ -282,8 +282,8 @@ async function defaultTest(args, clientArgs, final) {
 
             // prepare for the next round
             if(!final || testIdx !== tests.length) {
-                logger.info('Waiting 5 seconds for the next round...');
-                await Util.sleep(5000);
+                logger.info('Waiting 1 seconds for the next round...');
+                await Util.sleep(1000);
                 await monitor.restart();
             }
         } catch (err) {
