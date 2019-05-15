@@ -108,10 +108,12 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 	var weiValue uint64 = 0
 
 	if len(args) == 3 {
+		logger.Infof("Parsing wei string: %s", string(args[2]))
 		weiValue, err = strconv.ParseUint(string(args[2]), 10, 64)
 		if err != nil {
 			return shim.Error(fmt.Sprintf("failed to parse wei value: %s", err))
 		}
+		logger.Infof("Parsed wei value: %d", weiValue)
 	}
 
 	nonceString := stub.GetTxID()
