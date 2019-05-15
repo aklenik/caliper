@@ -26,7 +26,6 @@ import (
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"golang.org/x/crypto/sha3"
 	"time"
-	"os"
 )
 
 //Permissions for all accounts (users & contracts) to send CallTx or SendTx to a contract
