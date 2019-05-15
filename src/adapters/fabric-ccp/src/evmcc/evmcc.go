@@ -107,7 +107,7 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 	var gas uint64 = 10000000
 	var weiValue uint64 = 0
 
-	if len(args) == 3 {
+	if len(args) >= 3 {
 		logger.Infof("Parsing wei string: %s", string(args[2]))
 		weiValue, err = strconv.ParseUint(string(args[2]), 10, 64)
 		if err != nil {
