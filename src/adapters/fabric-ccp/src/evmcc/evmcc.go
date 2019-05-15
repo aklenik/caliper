@@ -51,10 +51,8 @@ func (evmcc *EvmChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 
 func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	startTime := time.Now()
-	procID := os.Getpid()
 	// We always expect 2 args: 'callee address, input data' or ' getCode ,  contract address'
 	args := stub.GetArgs()
-	logger.Infof("String Args: %s", strings.Join(stub.GetStringArgs(), "|"))
 
 	if len(args) > 0 {
 		if string(args[0]) == "account" {
@@ -108,12 +106,10 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 	var weiValue uint64 = 0
 
 	if len(args) >= 3 {
-		logger.Infof("Parsing wei string: %s", string(args[2]))
 		weiValue, err = strconv.ParseUint(string(args[2]), 10, 64)
 		if err != nil {
 			return shim.Error(fmt.Sprintf("failed to parse wei value: %s", err))
 		}
-		logger.Infof("Parsed wei value: %d", weiValue)
 	}
 
 	nonceString := stub.GetTxID()
@@ -175,7 +171,7 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return shim.Success([]byte(hex.EncodeToString(contractAddr.Bytes())))
 	} else {
 		logger.Debugf("Invoke contract at %x", calleeAddr.Bytes())
-		logger.Infof("<<MONITOR>>%s;cc_start_epoch_ns;%d<<MONITOR>>%d", stub.GetTxID(), startTime.UnixNano(), procID)
+		logger.Infof("<<MONITOR>>%s;cc_start_epoch_ns;%d<<MONITOR>>", stub.GetTxID(), startTime.UnixNano())
 
 		calleeCode := evmCache.GetCode(calleeAddr)
 		if evmErr := evmCache.Error(); evmErr != nil {
@@ -183,7 +179,6 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		}
 
 		evmStart := time.Now()
-		logger.Infof("weiValue: %d, nonce: %s", weiValue, nonceString)
 		logger.Infof("<<MONITOR>>%s;evm_start_epoch_ns;%d<<MONITOR>>", stub.GetTxID(), evmStart.UnixNano())
 		output, evmErr := vm.Call(evmCache, eventSink, callerAddr, calleeAddr, calleeCode, input, weiValue, &gas)
 		evmEnd := time.Now()
