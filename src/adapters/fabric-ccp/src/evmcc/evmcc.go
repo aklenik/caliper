@@ -52,9 +52,9 @@ func (evmcc *EvmChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	startTime := time.Now()
 	procID := os.Getpid()
-	logger.Infof("<<MONITOR>>%s;cc_start_epoch_ns;%d<<MONITOR>>%d", stub.GetTxID(), startTime.UnixNano(), procID)
 	// We always expect 2 args: 'callee address, input data' or ' getCode ,  contract address'
 	args := stub.GetArgs()
+	logger.Infof("String Args: %s", strings.Join(stub.GetStringArgs(), "|"))
 
 	if len(args) > 0 {
 		if string(args[0]) == "account" {
@@ -173,6 +173,7 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return shim.Success([]byte(hex.EncodeToString(contractAddr.Bytes())))
 	} else {
 		logger.Debugf("Invoke contract at %x", calleeAddr.Bytes())
+		logger.Infof("<<MONITOR>>%s;cc_start_epoch_ns;%d<<MONITOR>>%d", stub.GetTxID(), startTime.UnixNano(), procID)
 
 		calleeCode := evmCache.GetCode(calleeAddr)
 		if evmErr := evmCache.Error(); evmErr != nil {

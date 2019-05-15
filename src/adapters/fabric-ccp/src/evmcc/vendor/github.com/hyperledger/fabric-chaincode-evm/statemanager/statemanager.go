@@ -57,6 +57,7 @@ func (s *stateManager) GetAccount(address crypto.Address) (*acm.Account, error) 
 	}
 
 	if len(acctBytes) == 0 {
+		logger.Infof("GetAccount: %s, doesn't exist", key)
 		return nil, nil
 	}
 
