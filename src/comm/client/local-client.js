@@ -132,7 +132,7 @@ async function runFixedNumber(msg, cb, context) {
     let rateControl = new RateControl(msg.rateControl, msg.clientIdx, msg.roundIdx);
     await rateControl.init(msg);
 
-    await cb.init(blockchain, context, msg.args);
+    await cb.init(blockchain, context, msg.args, msg.clientIdx);
     startTime = Date.now();
 
     let promises = [];
@@ -162,7 +162,7 @@ async function runDuration(msg, cb, context) {
     await rateControl.init(msg);
     const duration = msg.txDuration; // duration in seconds
 
-    await cb.init(blockchain, context, msg.args);
+    await cb.init(blockchain, context, msg.args, msg.clientIdx);
     startTime = Date.now();
 
     let promises = [];
