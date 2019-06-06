@@ -267,6 +267,70 @@ class Fabric extends BlockchainInterface {
      * @private
      * @async
      */
+    async _updateChannelAnchors() {
+        let channels = this.networkUtil.getChannels();
+        let anchorUpdated = false;
+
+        for (let channel of channels) {
+            let channelObject = this.networkUtil.getNetworkObject().channels[channel];
+
+            if (!util.checkProperty(channelObject, 'anchorUpdates')) {
+                logger.info(`No anchor peer update specified for Channel '${channel}', skipping update`);
+                continue;
+            }
+
+            anchorUpdated = true;
+
+            for (let orgKey of Object.keys(channelObject.anchorUpdates)) {
+                let configUpdate = networkUtil.getChannelConfigFromFile(channelObject.anchorUpdates[orgKey]);
+                // NOTE: without knowing the system channel policies, signing with every org admin is a safe bet
+                let orgs = this.networkUtil.getOrganizationsOfChannel(channel);
+                let admin; // declared here to keep the admin of the last org of the channel
+                let signatures = [];
+                for (let org of orgs) {
+                    admin = this.adminProfiles.get(org);
+                    try {
+                        signatures.push(admin.signChannelConfig(configUpdate));
+                    } catch (err) {
+                        throw new Error(`${org}'s admin couldn't sign the ${orgKey} anchor update of Channel '${channel}': ${err.message}`);
+                    }
+                }
+
+                let txId = admin.newTransactionID(true);
+                let request = {
+                    config: configUpdate,
+                    signatures: signatures,
+                    name: channel,
+                    txId: txId
+                };
+
+                try {
+                    /** @link{BroadcastResponse} */
+                    let broadcastResponse = await admin.updateChannel(request);
+
+                    util.assertDefined(broadcastResponse, `The returned broadcast response for updating ${orgKey} anchors for Channel '${channel}' is undefined`);
+                    util.assertProperty(broadcastResponse, 'broadcastResponse', 'status');
+
+                    if (broadcastResponse.status !== 'SUCCESS') {
+                        throw new Error(`Orderer response indicated unsuccessful Channel '${channel}' update for ${orgKey} anchors: ${broadcastResponse.status}`);
+                    }
+                } catch (err) {
+                    throw new Error(`Couldn't update ${orgKey} anchors for Channel '${channel}': ${err.message}`);
+                }
+
+                logger.info(`Channel '${channel}' successfully updated with ${orgKey} anchors`);
+            }
+        }
+
+        return anchorUpdated;
+    }
+
+    /**
+     * Creates the specified channels if necessary.
+     * @return {boolean} True, if at least one channel was created. Otherwise, false.
+     * @private
+     * @async
+     */
     async _createChannels() {
         let channels = this.network.getChannels();
         let channelCreated = false;
@@ -283,7 +347,7 @@ class Fabric extends BlockchainInterface {
 
             let configUpdate;
             if (util.checkProperty(channelObject, 'configBinary')) {
-                configUpdate = networkUtil.getChannelConfigFromFile(channelObject);
+                configUpdate = networkUtil.getChannelConfigFromFile(channelObject.configBinary);
             }
             else {
                 configUpdate = networkUtil.getChannelConfigFromConfiguration(channelObject);
@@ -1690,6 +1754,11 @@ class Fabric extends BlockchainInterface {
         await this._initializeUsers(true);
 
         if (await this._createChannels()) {
+            logger.info(`Sleeping ${this.configSleepAfterCreateChannel / 1000.0}s...`);
+            await util.sleep(this.configSleepAfterCreateChannel);
+        }
+
+        if (await this._updateChannelAnchors()) {
             logger.info(`Sleeping ${this.configSleepAfterCreateChannel / 1000.0}s...`);
             await util.sleep(this.configSleepAfterCreateChannel);
         }

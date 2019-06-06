@@ -468,13 +468,12 @@ class FabricNetworkUtil {
 
     /**
      * Extracts the channel configuration from the configured file.
-     * @param {object} channelObject The channel configuration object.
+     * @param {string} path The channel configuration object.
      * @return {Buffer} The extracted channel configuration bytes.
-     * @private
      */
-    static getChannelConfigFromFile(channelObject) {
+    static getChannelConfigFromFile(path) {
         // extracting the config from the binary file
-        let binaryPath = util.resolvePath(channelObject.configBinary);
+        let binaryPath = util.resolvePath(path);
         let envelopeBytes;
 
         try {
