@@ -268,11 +268,11 @@ class Fabric extends BlockchainInterface {
      * @async
      */
     async _updateChannelAnchors() {
-        let channels = this.networkUtil.getChannels();
+        let channels = this.network.getChannels();
         let anchorUpdated = false;
 
         for (let channel of channels) {
-            let channelObject = this.networkUtil.getNetworkObject().channels[channel];
+            let channelObject = this.network.getNetworkObject().channels[channel];
 
             if (!util.checkProperty(channelObject, 'anchorUpdates')) {
                 logger.info(`No anchor peer update specified for Channel '${channel}', skipping update`);
@@ -284,7 +284,7 @@ class Fabric extends BlockchainInterface {
             for (let orgKey of Object.keys(channelObject.anchorUpdates)) {
                 let configUpdate = networkUtil.getChannelConfigFromFile(channelObject.anchorUpdates[orgKey]);
                 // NOTE: without knowing the system channel policies, signing with every org admin is a safe bet
-                let orgs = this.networkUtil.getOrganizationsOfChannel(channel);
+                let orgs = this.network.getOrganizationsOfChannel(channel);
                 let admin; // declared here to keep the admin of the last org of the channel
                 let signatures = [];
                 for (let org of orgs) {
