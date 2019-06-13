@@ -1568,7 +1568,7 @@ class Fabric extends BlockchainInterface {
 
             invokeStatus.Set('time_orderer_ack', Date.now());
 
-            if (broadcastResponse.status !== 'SUCCESS') {
+            if (broadcastResponse && broadcastResponse.status && broadcastResponse.status !== 'SUCCESS') {
                 invokeStatus.Set(`broadcast_response_error_${targetOrderer}`, broadcastResponse.status);
 
                 // the submission was explicitly rejected, so the Tx will definitely not be ordered
