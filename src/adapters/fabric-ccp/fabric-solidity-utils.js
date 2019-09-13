@@ -308,8 +308,15 @@ class FabricSolidityUtils {
 
         // parse the ABI
         for (let element of contractDetails.abi) {
+            logger.debug(`Processing ABI element: ${JSON.stringify(element)}`);
             // skip it, since it won't exist in the runtime code
             if (element.type === 'constructor') {
+                logger.debug('Skipping "constructor" ABI element');
+                continue;
+            }
+
+            if (element.type !== 'function') {
+                logger.debug(`Skipping "${element.type}" ABI element`);
                 continue;
             }
 

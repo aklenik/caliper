@@ -26,6 +26,7 @@ import (
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"golang.org/x/crypto/sha3"
 	"time"
+	"unicode/utf8"
 )
 
 //Permissions for all accounts (users & contracts) to send CallTx or SendTx to a contract
@@ -44,12 +45,13 @@ var evmLogger = logging.NewNoopLogger()
 type EvmChaincode struct{}
 
 func (evmcc *EvmChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
-	logger.Debugf("Init evmcc, it's no-op")
+	logger.Infof("Init evmcc, it's no-op")
 	return shim.Success(nil)
 }
 
 func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	startTime := time.Now()
+	logger.Infof("Executing TX [%s] with args: %s", stub.GetTxID(), strings.Join(stub.GetStringArgs(), ", "))
 	// We always expect 2 args: 'callee address, input data' or ' getCode ,  contract address'
 	args := stub.GetArgs()
 
@@ -108,12 +110,15 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		weiValue, err = strconv.ParseUint(string(args[2]), 10, 64)
 		if err != nil {
 			return shim.Error(fmt.Sprintf("failed to parse wei value: %s", err))
+		} else {
+			logger.Infof("Using wei value %d", weiValue)
 		}
 	}
 
 	nonceString := stub.GetTxID()
 	if len(args) == 4 {
 		nonceString = string(args[3])
+		logger.Infof("Using nonce: %s", nonceString)
 	}
 
 	state := statemanager.NewStateManager(stub)
@@ -126,14 +131,14 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 	})
 	eventSink := &eventmanager.EventManager{Stub: stub}
 	nonce := crypto.Nonce(callerAddr, []byte(nonceString))
+	logger.Infof("Starting VM")
 	vm := evm.NewVM(newParams(), callerAddr, nonce, evmLogger)
 
 	if calleeAddr == crypto.ZeroAddress {
-		logger.Debugf("Deploy contract")
-
-		logger.Debugf("Contract nonce number = %d", nonce)
+		logger.Infof("Deploy contract")
 		contractAddr := crypto.NewContractAddress(callerAddr, nonce)
 		// Contract account needs to be created before setting code to it
+		logger.Infof("Creating contract account %s", contractAddr.String())
 		evmCache.CreateAccount(contractAddr)
 		if evmErr := evmCache.Error(); evmErr != nil {
 			return shim.Error(fmt.Sprintf("failed to create the contract account: %s ", evmErr))
@@ -144,6 +149,7 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 			return shim.Error(fmt.Sprintf("failed to set contract account permissions: %s ", evmErr))
 		}
 
+		logger.Infof("Calling EVM. Caller: %s, Callee: %s", calleeAddr.String(), contractAddr.String())
 		rtCode, evmErr := vm.Call(evmCache, eventSink, callerAddr, contractAddr, input, input, weiValue, &gas)
 		if evmErr != nil {
 			return shim.Error(fmt.Sprintf("failed to deploy code: %s", evmErr))
@@ -152,6 +158,7 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 			return shim.Error(fmt.Sprintf("nil bytecode"))
 		}
 
+		logger.Infof("Initializing code")
 		evmCache.InitCode(contractAddr, rtCode)
 		if evmErr := evmCache.Error(); evmErr != nil {
 			return shim.Error(fmt.Sprintf("failed to update contract account: %s", evmErr))
@@ -167,9 +174,13 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 			return shim.Error(fmt.Sprintf("failed to sync: %s", evmErr))
 		}
 		// return encoded hex bytes for human-readability
-		return shim.Success([]byte(hex.EncodeToString(contractAddr.Bytes())))
+		logger.Infof("Encoding contract address")
+		hexEncode := hex.EncodeToString(contractAddr.Bytes())
+		logger.Infof("Encoded contract address: %s", hexEncode)
+		logger.Infof("Encoded contract address is UTF8: %t", utf8.ValidString(hexEncode))
+		return shim.Success([]byte(hexEncode))
 	} else {
-		logger.Debugf("Invoke contract at %x", calleeAddr.Bytes())
+		logger.Infof("Invoke contract at %x", calleeAddr.Bytes())
 		logger.Infof("<<MONITOR>>%s;cc_start_epoch_ns;%d<<MONITOR>>", stub.GetTxID(), startTime.UnixNano())
 
 		calleeCode := evmCache.GetCode(calleeAddr)
@@ -383,6 +394,6 @@ func identityToAddr(id []byte) (crypto.Address, error) {
 
 func main() {
 	if err := shim.Start(new(EvmChaincode)); err != nil {
-		logger.Errorf("Error starting EVM chaincode: %s", err)
+		logger.Errorf("Error starting EVM chaincode: %+v", err)
 	}
 }

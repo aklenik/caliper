@@ -921,99 +921,6 @@ class Fabric extends BlockchainInterface {
             let context = await this.getContext(undefined, undefined, 0);
             await util.sleep(1000);
 
-            // deploy Solidity contracts
-            for (let chaincodeInfo of chaincodeInfos) {
-                if (chaincodeInfo.language !== 'solidity') {
-                    continue;
-                }
-
-                let ccObject = this.network.getNetworkObject().channels[channel].chaincodes.find(
-                    cc => cc.id === chaincodeInfo.id && cc.version === chaincodeInfo.version && cc.language === chaincodeInfo.language);
-
-                let contractID = this.network.getContractIdOfChaincodeOfChannel(channel, chaincodeInfo.id, chaincodeInfo.version);
-                let contractDescriptor;
-
-                let bytecode;
-                let contractName = util.checkProperty(ccObject, 'contractName') ? ccObject.contractName : ccObject.id;
-
-                // priority: path > bytecode > address
-                if (util.checkProperty(ccObject, 'path')) {
-                    // need to compile
-                    let contractPath = util.resolvePath(ccObject.path);
-                    let compilerResult = await solidityUtil.compileContract(contractPath, contractName,
-                        util.checkProperty(ccObject, 'detectCompilerVersion') && ccObject.detectCompilerVersion);
-
-                    bytecode = compilerResult.bytecode;
-                    // save the signatures for the client processes, still need the address
-                    contractDescriptor = { methodSignatures: compilerResult.methodSignatures };
-                } else if (util.checkProperty(ccObject, 'bytecode')) {
-                    // if the bytecode is provided, no need for compilation
-                    logger.info(`${contractID} bytecode provided, skipping compilation`);
-                    if (util.checkProperty(ccObject.bytecode, 'path')) {
-                        bytecode = fs.readFileSync(util.resolvePath(ccObject.bytecode.path), 'utf-8').toString();
-                    } else {
-                        bytecode = ccObject.bytecode.content;
-                    }
-
-                    // save the signatures for the client processes, still need the address
-                    contractDescriptor = { methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures) };
-                } else {
-                    logger.info(`${contractID} is already deployed in ${channel} at address ${ccObject.address}`);
-
-                    // save the descriptor for distribution for the client processes
-                    contractDescriptor = {
-                        address: ccObject.address,
-                        methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures)
-                    };
-                    this.evmContractDescriptors[contractID] = contractDescriptor;
-                    continue;
-                }
-
-                let ctrArgsProvided = util.checkProperty(ccObject, 'init');
-                let hasConstructor = solidityUtil.isConstructorArgsNeeded(contractDescriptor.methodSignatures);
-
-                if (ctrArgsProvided && !hasConstructor) {
-                    throw new Error(`Solidity contract ${contractID} does not contain a constructor, but arguments are provided`);
-                }
-
-                if (!ctrArgsProvided && hasConstructor) {
-                    throw new Error(`Solidity contract ${contractID} contains a constructor, but no arguments are provided`);
-                }
-
-                // check for constructor arguments, and append their encodings
-                if (ctrArgsProvided) {
-                    bytecode += solidityUtil.encodeConstructorArguments(contractDescriptor.methodSignatures, ccObject.init);
-                    logger.debug(`${contractID} bytecode with constructor arguments: ${bytecode}`);
-                }
-
-                // deploy the contract through the EVM proxy chaincode of the channel
-                let zeroAddress = solidityUtil.getZeroAddress();
-                let evmProxyChaincodeID = this.network.getEvmProxyChaincodeOfChannel(channel);
-                let evmProxyChaincodeDetails = this.network.getContractDetails(evmProxyChaincodeID);
-
-                let invokeSettings = {
-                    invokerIdentity: ccObject.deployerIdentity,
-                    channel: evmProxyChaincodeDetails.channel,
-                    chaincodeId: evmProxyChaincodeDetails.id,
-                    chaincodeVersion: evmProxyChaincodeDetails.version,
-                    chaincodeFunction: zeroAddress,
-                    chaincodeArguments: [ bytecode, '0', contractName ] // zero wei, plus contractName will be the nonce
-                };
-
-                // setup eventhubs for a transaction invocation
-                logger.info(`Deploying Solidity contract ${contractID}. This might take some time...`);
-                let results = await this._submitSingleTransaction(context, invokeSettings, 100*1000);
-
-                if (!results.IsCommitted()) {
-                    throw new Error(`Couldn't deploy Solidity contract ${contractID}`);
-                }
-
-                contractDescriptor.address = results.GetResult().toString();
-                // save the descriptor for the client processes
-                this.evmContractDescriptors[contractID] = contractDescriptor;
-                logger.info(`Successfully deployed Solidity contract ${contractID}`);
-            }
-
             let evmProxyChaincodeID = this.network.getEvmProxyChaincodeOfChannel(channel);
             let evmProxyChaincodeDetails = this.network.getContractDetails(evmProxyChaincodeID);
 
@@ -1085,6 +992,122 @@ class Fabric extends BlockchainInterface {
                 if (!result.IsCommitted()) {
                     throw new Error(`Failed to set initial balance for ${admin[0]}`);
                 }
+            }
+
+            // deploy Solidity contracts
+            for (let chaincodeInfo of chaincodeInfos) {
+                if (chaincodeInfo.language !== 'solidity') {
+                    continue;
+                }
+
+                let ccObject = this.network.getNetworkObject().channels[channel].chaincodes.find(
+                    cc => cc.id === chaincodeInfo.id && cc.version === chaincodeInfo.version && cc.language === chaincodeInfo.language);
+
+                let contractID = this.network.getContractIdOfChaincodeOfChannel(channel, chaincodeInfo.id, chaincodeInfo.version);
+                let contractDescriptor;
+
+                let bytecode;
+                let contractName = util.checkProperty(ccObject, 'contractName') ? ccObject.contractName : ccObject.id;
+
+                // priority: path > bytecode > address
+                if (util.checkProperty(ccObject, 'path')) {
+                    // need to compile
+                    let contractPath = util.resolvePath(ccObject.path);
+                    let compilerResult = await solidityUtil.compileContract(contractPath, contractName,
+                        util.checkProperty(ccObject, 'detectCompilerVersion') && ccObject.detectCompilerVersion);
+
+                    bytecode = compilerResult.bytecode;
+                    // save the signatures for the client processes, still need the address
+                    contractDescriptor = { methodSignatures: compilerResult.methodSignatures };
+                } else if (util.checkProperty(ccObject, 'bytecode')) {
+                    // if the bytecode is provided, no need for compilation
+                    logger.info(`${contractID} bytecode provided, skipping compilation`);
+                    if (util.checkProperty(ccObject.bytecode, 'path')) {
+                        bytecode = fs.readFileSync(util.resolvePath(ccObject.bytecode.path), 'utf-8').toString();
+                    } else {
+                        bytecode = ccObject.bytecode.content;
+                    }
+
+                    // save the signatures for the client processes, still need the address
+                    contractDescriptor = { methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures) };
+                } else {
+                    logger.info(`${contractID} is already deployed in ${channel} at address ${ccObject.address}`);
+
+                    // save the descriptor for distribution for the client processes
+                    contractDescriptor = {
+                        address: ccObject.address,
+                        methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures)
+                    };
+                    this.evmContractDescriptors[contractID] = contractDescriptor;
+                    continue;
+                }
+
+                let ctrArgsProvided = util.checkProperty(ccObject, 'init');
+                let hasConstructor = solidityUtil.isConstructorArgsNeeded(contractDescriptor.methodSignatures);
+
+                if (ctrArgsProvided && !hasConstructor) {
+                    throw new Error(`Solidity contract ${contractID} does not contain a constructor, but arguments are provided`);
+                }
+
+                if (!ctrArgsProvided && hasConstructor) {
+                    throw new Error(`Solidity contract ${contractID} contains a constructor, but no arguments are provided`);
+                }
+
+                // check for constructor arguments, and append their encodings
+                if (ctrArgsProvided) {
+                    logger.debug(`Checking constructor arguments for ${channel}:${ccObject.id}@${ccObject.version}`);
+                    for (let i = 0; i < ccObject.init.length; i++) {
+                        if (ccObject.init[i].startsWith('$USER_')) {
+                            let clients = Array.from(this.clientProfiles.keys());
+                            let index = parseInt(ccObject.init[i].substring('$USER_'.length));
+                            let clientName = clients[index];
+                            let address = this.evmUserAddresses[channel][clientName];
+
+                            logger.debug(`Switching ${ccObject.init[i]} to ${clientName}'s address: ${address}`);
+                            ccObject.init[i] = address;
+                            continue;
+                        }
+
+                        if (ccObject.init[i].startsWith('$ADMIN_')) {
+                            let admins = Array.from(this.adminProfiles.keys());
+                            let index = parseInt(ccObject.init[i].substring('$ADMIN_'.length));
+                            let adminName = admins[index];
+                            let address = this.evmUserAddresses[channel][`#${adminName}`];
+
+                            logger.debug(`Switching ${ccObject.init[i]} to ${adminName}'s address ${address}`);
+                            ccObject.init[i] = address;
+                        }
+                    }
+                    bytecode += solidityUtil.encodeConstructorArguments(contractDescriptor.methodSignatures, ccObject.init);
+                    logger.debug(`${contractID} bytecode with constructor arguments: ${bytecode}`);
+                }
+
+                // deploy the contract through the EVM proxy chaincode of the channel
+                let zeroAddress = solidityUtil.getZeroAddress();
+                let evmProxyChaincodeID = this.network.getEvmProxyChaincodeOfChannel(channel);
+                let evmProxyChaincodeDetails = this.network.getContractDetails(evmProxyChaincodeID);
+
+                let invokeSettings = {
+                    invokerIdentity: ccObject.deployerIdentity,
+                    channel: evmProxyChaincodeDetails.channel,
+                    chaincodeId: evmProxyChaincodeDetails.id,
+                    chaincodeVersion: evmProxyChaincodeDetails.version,
+                    chaincodeFunction: zeroAddress,
+                    chaincodeArguments: [ bytecode, '0', contractName ] // zero wei, plus contractName will be the nonce
+                };
+
+                // setup eventhubs for a transaction invocation
+                logger.info(`Deploying Solidity contract ${contractID}. This might take some time...`);
+                let results = await this._submitSingleTransaction(context, invokeSettings, 100*1000);
+
+                if (!results.IsCommitted()) {
+                    throw new Error(`Couldn't deploy Solidity contract ${contractID}`);
+                }
+
+                contractDescriptor.address = results.GetResult().toString();
+                // save the descriptor for the client processes
+                this.evmContractDescriptors[contractID] = contractDescriptor;
+                logger.info(`Successfully deployed Solidity contract ${contractID}`);
             }
 
             await this.releaseContext(context);
