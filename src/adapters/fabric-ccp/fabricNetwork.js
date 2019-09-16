@@ -264,7 +264,7 @@ class FabricNetwork {
                     contractID: `${channel}.#EVM`,
                     version: 'v0',
                     language: 'golang',
-                    path: 'evmcc',
+                    path: 'github.com/hyperledger/fabric-chaincode-evm/evmcc',
                     gopath: 'src/adapters/fabric-ccp'
                 };
 
