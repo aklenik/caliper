@@ -1057,6 +1057,10 @@ class Fabric extends BlockchainInterface {
                 if (ctrArgsProvided) {
                     logger.debug(`Checking constructor arguments for ${channel}:${ccObject.id}@${ccObject.version}`);
                     for (let i = 0; i < ccObject.init.length; i++) {
+                        if (typeof ccObject.init[i] !== 'string') {
+                            continue;
+                        }
+
                         if (ccObject.init[i].startsWith('$USER_')) {
                             let clients = Array.from(this.clientProfiles.keys());
                             let index = parseInt(ccObject.init[i].substring('$USER_'.length));
