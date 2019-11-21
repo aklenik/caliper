@@ -325,11 +325,6 @@ class FabricNetwork {
                 // EVM CONTRACTS //
                 ///////////////////
 
-                // TODO: OBSOLETE
-                // if (util.checkProperty(cc, 'evmProxy') && cc.evmProxy) {
-                //     this.evmProxies.set(channel, contractID);
-                // }
-
                 if (util.checkProperty(cc, 'language') && cc.language === 'solidity') {
                     this.solidityPresent.set(channel, true);
 
@@ -350,9 +345,7 @@ class FabricNetwork {
                             logger.warn(`${contractID}.methodSignatures will be ignored and will be acquired from the compiler since a path is provided`);
                         }
                     } else if (util.checkProperty(cc, 'bytecode')) {
-                        util.assertAllProperties(cc, ccObjName, 'deployerIdentity', 'methodSignatures');
-                        solidityUtil.checkMethodSignatures(contractID, cc.methodSignatures);
-
+                        util.assertProperty(cc, ccObjName, 'deployerIdentity');
                         if (util.checkProperty(cc, 'address')) {
                             logger.warn(`${contractID}.address will be ignored since bytecode is provided`);
                         }
@@ -364,7 +357,23 @@ class FabricNetwork {
                                 throw new Error(`File specified at '${ccObjName}.bytecode.path' does not exist: ${resolvedPath}`);
                             }
                         } else {
-                            util.assertProperty(cc.bytecode, ccObjName, 'content');
+                            util.assertProperty(cc.bytecode, `${ccObjName}.bytecode`, 'content');
+                        }
+
+                        util.assertAnyProperty(cc, ccObjName, 'abi', 'methodSignatures');
+
+                        if (util.checkProperty(cc, 'methodSignatures')) {
+                            solidityUtil.checkMethodSignatures(contractID, cc.methodSignatures);
+                        } else {
+                            // the ABI can reside in a file, or embedded in the configuration
+                            if (util.checkProperty(cc.abi, 'path')) {
+                                let resolvedPath = util.resolvePath(cc.abi.path);
+                                if (!fs.existsSync(resolvedPath)) {
+                                    throw new Error(`File specified at '${ccObjName}.abi.path' does not exist: ${resolvedPath}`);
+                                }
+                            } else {
+                                util.assertProperty(cc.abi, `${ccObjName}.abi`, 'content');
+                            }
                         }
                     } else {
                         util.assertAllProperties(cc, ccObjName, 'address', 'methodSignatures');

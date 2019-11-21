@@ -1028,8 +1028,27 @@ class Fabric extends BlockchainInterface {
                         bytecode = ccObject.bytecode.content;
                     }
 
-                    // save the signatures for the client processes, still need the address
-                    contractDescriptor = { methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures) };
+                    // method signatures are provided either directly ("methodSignatures"), or mined from ABI ("abi")
+                    if (util.checkProperty(ccObject, 'methodSignatures')) {
+                        // save the signatures for the client processes, still need the address
+                        contractDescriptor = { methodSignatures: solidityUtil.parseMethodSignatures(ccObject.methodSignatures) };
+                    } else if (util.checkProperty(ccObject, 'abi')) {
+                        let abi;
+                        if (util.checkProperty(ccObject.abi, 'path')) {
+                            abi = require(util.resolvePath(ccObject.abi.path));
+                        } else if (util.checkProperty(ccObject.abi, 'content')) {
+                            abi = ccObject.abi.content;
+                        } else {
+                            throw new Error(`Solidity contract ${contractID} must include ABI either directly or refer to a file`);
+                        }
+
+                        let signatures = solidityUtil.abiToSignatures(abi);
+                        let methodSignatures = solidityUtil.parseMethodSignatures(signatures);
+                        solidityUtil.extractConstructorSignature(abi, methodSignatures);
+                        contractDescriptor = { methodSignatures: methodSignatures };
+                    } else {
+                        throw new Error(`Solidity contract ${contractID} must define method signatures either directly, or using the ABI`);
+                    }
                 } else {
                     logger.info(`${contractID} is already deployed in ${channel} at address ${ccObject.address}`);
 
@@ -1062,7 +1081,7 @@ class Fabric extends BlockchainInterface {
                         }
 
                         if (ccObject.init[i].startsWith('$USER_')) {
-                            let clients = Array.from(this.clientProfiles.keys());
+                            let clients = Object.keys(this.network.getNetworkObject().clients);
                             let index = parseInt(ccObject.init[i].substring('$USER_'.length));
                             let clientName = clients[index];
                             let address = this.evmUserAddresses[channel][clientName];
@@ -1370,14 +1389,15 @@ class Fabric extends BlockchainInterface {
 
             if (errMsg) {
                 invokeStatus.SetStatusFail();
-                logger.error(`Query error for ${querySettings.chaincodeId}@${querySettings.chaincodeVersion} in ${querySettings.channel}:${errMsg}`);
+                logger.error(`Query [${txId.substring(0, 10)}] error for ${querySettings.chaincodeId}@${querySettings.chaincodeVersion} in ${querySettings.channel}:${errMsg}`);
             } else {
+                logger.debug(`Query [${txId.substring(0, 10)}] successful`);
                 invokeStatus.SetStatusSuccess();
             }
         } catch (err) {
             invokeStatus.SetStatusFail();
             invokeStatus.Set('unexpected_error', err.message);
-            logger.error(`Unexpected query error for ${querySettings.chaincodeId}@${querySettings.chaincodeVersion} in ${querySettings.channel}: ${err.stack ? err.stack : err}`);
+            logger.error(`Unexpected query [${txId.substring(0, 10)}] error for ${querySettings.chaincodeId}@${querySettings.chaincodeVersion} in ${querySettings.channel}: ${err.stack ? err.stack : err}`);
         }
 
         return invokeStatus;
@@ -1635,6 +1655,7 @@ class Fabric extends BlockchainInterface {
 
                 // every commit event contained a VALID code
                 // mark the time corresponding to the set threshold
+                logger.debug(`TX [${txId.substring(0, 10)}] successful`);
                 invokeStatus.SetStatusSuccess(eventResults[thresholdIndex].time);
             }
         } catch (err) {
@@ -1645,12 +1666,12 @@ class Fabric extends BlockchainInterface {
                 invokeStatus.Set('unexpected_error', err.message);
                 logger.error(`Transaction[${txId.substring(0, 10)}] unexpected error: ${err.stack ? err.stack : err}`);
             } else if (err.length > 0) {
-                let logMsg = `Transaction[${txId.substring(0, 10)}] life-cycle errors:`;
-                for (let execError of err) {
-                    logMsg += `\n\t- ${execError.message}`;
-                }
-
-                logger.error(logMsg);
+                // let logMsg = `Transaction[${txId.substring(0, 10)}] life-cycle errors:`;
+                // for (let execError of err) {
+                //     logMsg += `\n\t- ${execError.message}`;
+                // }
+                //
+                // logger.error(logMsg);
             }
         }
 

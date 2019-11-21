@@ -304,10 +304,35 @@ class FabricSolidityUtils {
         logger.debug(`${contractName} method identifiers: ${JSON.stringify(methodIdentifiers)}`);
 
         // discard the function hashes, calculate them when constructing the method signatures
+        let signatures = FabricSolidityUtils.abiToSignatures(contractDetails.abi);
+        let methodSignatures = FabricSolidityUtils.parseMethodSignatures(signatures);
+        FabricSolidityUtils.extractConstructorSignature(contractDetails.abi, methodSignatures);
+
+        return {
+            bytecode: bytecode,
+            methodSignatures: methodSignatures
+        };
+    }
+
+    static extractConstructorSignature(abi, methodSignatures) {
+        // parse the constructor ABI if any
+        for (let element of abi) {
+            if (element.type !== 'constructor') {
+                continue;
+            }
+
+            // no need for the function hash, won't be part of the runtime contract
+            // keep the type from the input descriptions (discard the name)
+            methodSignatures['#ctr'] = { argumentTypes: element.inputs.map(i => i.type) };
+            break; // shouldn't be any more constructor
+        }
+    }
+
+    static abiToSignatures(abi) {
         let signatures = [];
 
         // parse the ABI
-        for (let element of contractDetails.abi) {
+        for (let element of abi) {
             logger.debug(`Processing ABI element: ${JSON.stringify(element)}`);
             // skip it, since it won't exist in the runtime code
             if (element.type === 'constructor') {
@@ -325,24 +350,7 @@ class FabricSolidityUtils {
             signatures.push(`${element.name}(${inputs}):(${outputs})`);
         }
 
-        let methodSignatures = FabricSolidityUtils.parseMethodSignatures(signatures);
-
-        // parse the constructor ABI if any
-        for (let element of contractDetails.abi) {
-            if (element.type !== 'constructor') {
-                continue;
-            }
-
-            // no need for the function hash, won't be part of the runtime contract
-            // keep the type from the input descriptions (discard the name)
-            methodSignatures['#ctr'] = { argumentTypes: element.inputs.map(i => i.type) };
-            break; // shouldn't be any more constructor
-        }
-
-        return {
-            bytecode: bytecode,
-            methodSignatures: methodSignatures
-        };
+        return signatures;
     }
 
     static isConstructorArgsNeeded(signatures) {
@@ -359,6 +367,8 @@ class FabricSolidityUtils {
     }
 
     static transformTransactionSettings(evmContractID, evmContractDescriptors, networkUtil, originalSettings) {
+        logger.debug(`Transforming for TX: ${JSON.stringify(originalSettings)}`);
+        let metadata = `${originalSettings.chaincodeFunction}: ${originalSettings.chaincodeArguments.join('; ')}`;
         let evmProxyDetails = networkUtil.getContractDetails(networkUtil.getEvmProxyChaincodeOfChannel(originalSettings.channel));
 
         // redirect to the proxy chaincode
@@ -379,9 +389,12 @@ class FabricSolidityUtils {
 
         let evmMethod = originalSettings.chaincodeFunction;
         let evmMethodDescriptor = evmContractDescriptors[evmContractID].methodSignatures[evmMethod];
+        logger.debug(`EVM method descriptor for ${evmMethod}: ${JSON.stringify(evmMethodDescriptor)}`);
         originalSettings.chaincodeFunction = evmContractDescriptors[evmContractID].address;
 
-        let argsHash = FabricSolidityUtils.encodeArgsToHex(evmMethodDescriptor.argumentTypes, originalSettings.chaincodeArguments);
+        let argsHash = evmMethodDescriptor.argumentTypes && evmMethodDescriptor.argumentTypes.length > 0
+            ? FabricSolidityUtils.encodeArgsToHex(evmMethodDescriptor.argumentTypes, originalSettings.chaincodeArguments)
+            : '';
 
         // firt argument is the address of the contract, the second is the function hash concatenated with the arguments' hash
         originalSettings.chaincodeArguments = [ evmMethodDescriptor.functionHash + argsHash ];
@@ -392,12 +405,13 @@ class FabricSolidityUtils {
         );
 
         // if provided, set nonce as the third arg (fourth, if you count the function name as arg)
-        if (util.checkProperty(originalSettings, 'nonce')) {
-
-        }
         originalSettings.chaincodeArguments.push(
             util.checkProperty(originalSettings, 'nonce') ? originalSettings.nonce.toString() : '0'
         );
+
+        originalSettings.chaincodeArguments.push(metadata);
+
+        logger.debug(`Transformed TX: ${JSON.stringify(originalSettings)}`);
     }
 }
 

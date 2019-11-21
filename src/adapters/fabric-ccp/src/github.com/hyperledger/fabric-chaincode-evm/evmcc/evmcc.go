@@ -54,8 +54,8 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		}
 	}
 
-	if (len(args) < 2) || (len(args) > 4) {
-		return shim.Error(fmt.Sprintf("expects [2,4] args, got %d : %s", len(args), string(args[0])))
+	if (len(args) < 2) || (len(args) > 5) {
+		return shim.Error(fmt.Sprintf("expects [2,5] args, got %d : %s", len(args), string(args[0])))
 	}
 
 	if string(args[0]) == "getCode" {
@@ -68,6 +68,10 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 
 	if string(args[0]) == "subtractFromBalance" {
 		return evmcc.modifyBalance(stub, args[1], "sub")
+	}
+
+	if len(args) == 5 {
+		logger.Infof("TX [%s] metadata: %s", stub.GetTxID(), args[4])
 	}
 
 	c, err := hex.DecodeString(string(args[0]))
@@ -154,10 +158,10 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		}
 
 		// Passing the first 8 bytes contract address just created
-		//err := eventSink.Flush(string(contractAddr.Bytes()[0:8]))
-		//if err != nil {
-		//	return shim.Error(fmt.Sprintf("error in Flush: %s", err))
-		//}
+		err := eventSink.Flush(hex.EncodeToString(contractAddr.Bytes()[0:8]))
+		if err != nil {
+			return shim.Error(fmt.Sprintf("error in Flush: %s", err))
+		}
 
 		if evmErr := evmCache.Sync(); evmErr != nil {
 			return shim.Error(fmt.Sprintf("failed to sync: %s", evmErr))
@@ -191,10 +195,10 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 
 		// Passing the function hash of the method that has triggered the event
 		// The function hash is the first 8 bytes of the Input argument
-		//err := eventSink.Flush(string(args[1][0:8]))
-		//if err != nil {
-		//	return shim.Error(fmt.Sprintf("error in Flush: %s", err))
-		//}
+		err := eventSink.Flush(string(args[1][0:8]))
+		if err != nil {
+			return shim.Error(fmt.Sprintf("error in Flush: %s", err))
+		}
 
 		// Sync is required for evm to send writes to the statemanager.
 		if evmErr := evmCache.Sync(); evmErr != nil {
