@@ -1389,7 +1389,7 @@ class Fabric extends BlockchainInterface {
 
             if (errMsg) {
                 invokeStatus.SetStatusFail();
-                logger.error(`Query [${txId.substring(0, 10)}] error for ${querySettings.chaincodeId}@${querySettings.chaincodeVersion} in ${querySettings.channel}:${errMsg}`);
+                logger.debug(`Query [${txId.substring(0, 10)}] error for ${querySettings.chaincodeId}@${querySettings.chaincodeVersion} in ${querySettings.channel}:${errMsg}`);
             } else {
                 logger.debug(`Query [${txId.substring(0, 10)}] successful`);
                 invokeStatus.SetStatusSuccess();
@@ -1666,12 +1666,12 @@ class Fabric extends BlockchainInterface {
                 invokeStatus.Set('unexpected_error', err.message);
                 logger.error(`Transaction[${txId.substring(0, 10)}] unexpected error: ${err.stack ? err.stack : err}`);
             } else if (err.length > 0) {
-                // let logMsg = `Transaction[${txId.substring(0, 10)}] life-cycle errors:`;
-                // for (let execError of err) {
-                //     logMsg += `\n\t- ${execError.message}`;
-                // }
-                //
-                // logger.error(logMsg);
+                let logMsg = `Transaction[${txId.substring(0, 10)}] life-cycle errors:`;
+                for (let execError of err) {
+                    logMsg += `\n\t- ${execError.message}`;
+                }
+
+                logger.debug(logMsg);
             }
         }
 
