@@ -96,7 +96,7 @@ func (evmcc *EvmChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return shim.Error(fmt.Sprintf("failed to decode input bytes: %s", err))
 	}
 
-	var gas uint64 = 10000
+	var gas uint64 = 10000000
 	var weiValue uint64 = 0
 
 	if len(args) >= 3 {
