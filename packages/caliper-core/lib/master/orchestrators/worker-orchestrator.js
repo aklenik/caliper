@@ -452,9 +452,11 @@ class WorkerOrchestrator {
         } else if (testSpecification.txDuration) {
             // Run for time specified txDuration based on workers
             // Do nothing, we run for the time specified within testSpecification.txDuration
-        } else {
-            throw new Error('Unconditioned transaction rate driving mode');
         }
+        // TODO: for conditional driving mode
+        // else {
+        //     throw new Error('Unconditioned transaction rate driving mode');
+        // }
 
         // Ensure results are reset
         this.results = [];

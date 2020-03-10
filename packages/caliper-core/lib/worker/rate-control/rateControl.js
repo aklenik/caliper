@@ -80,10 +80,11 @@ const RateControl = class {
      * @param {number} idx Sequence number of the current transaction.
      * @param {object[]} recentResults The list of results of recent transactions.
      * @param {Array} resultStats The aggregated stats of previous results.
+     * @param {CancellationToken} cancellationToken The cancellation token.
      * @async
      */
-    async applyRateControl(start, idx, recentResults, resultStats) {
-        await this.controller.applyRateControl(start, idx, recentResults, resultStats);
+    async applyRateControl(start, idx, recentResults, resultStats, cancellationToken) {
+        await this.controller.applyRateControl(start, idx, recentResults, resultStats, cancellationToken);
     }
 
     /**

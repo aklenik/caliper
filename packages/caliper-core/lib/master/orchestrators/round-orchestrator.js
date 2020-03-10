@@ -78,9 +78,10 @@ class RoundOrchestrator {
                 throw new Error('The "txDuration" and "txNumber" attributes are mutually exclusive');
             }
 
-            if (!round.txNumber && !round.txDuration) {
-                throw new Error('either the "txDuration" or the "txNumber" attribute must be specified');
-            }
+            // TODO: for conditional drive mode
+            // if (!round.txNumber && !round.txDuration) {
+            //     throw new Error('either the "txDuration" or the "txNumber" attribute must be specified');
+            // }
 
             if (!round.rateControl) {
                 throw new Error('Missing "rateControl" attribute');
@@ -152,7 +153,7 @@ class RoundOrchestrator {
 
             if (round.txNumber) {
                 config.numb = round.txNumber;
-            } else {
+            } else if (round.txDuration) {
                 config.txDuration = round.txDuration;
             }
 

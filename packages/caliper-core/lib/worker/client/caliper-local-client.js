@@ -21,6 +21,45 @@ const RateControl = require('../rate-control/rateControl.js');
 const PrometheusClient = require('../../common/prometheus/prometheus-push-client');
 
 const Logger = CaliperUtils.getLogger('caliper-local-client.js');
+
+/**
+ * Represents a token for signalling cancellation of some operation.
+ */
+class CancellationToken {
+    /**
+     * Initialzes the cancellation token.
+     */
+    constructor() {
+        this._isCanceled = false;
+        this._reason = '-';
+    }
+
+    /**
+     * Indicates whether the operation has been cancelled.
+     * @return {boolean} True if cancelled, false otherwise.
+     */
+    isCanceled() {
+        return this._isCanceled;
+    }
+
+    /**
+     * Returns the reason for canceling the operation.
+     * @return {string} The reason.
+     */
+    getReason() {
+        return this._reason;
+    }
+
+    /**
+     * Signals that the operation must be canceled.
+     * @param {string} reason The reason for canceling the operation.
+     */
+    cancel(reason) {
+        this._isCanceled = true;
+        this._reason = reason;
+    }
+}
+
 /**
  * Class for Client Interaction
  */
@@ -241,17 +280,23 @@ class CaliperLocalClient {
         this.startTime = Date.now();
 
         let promises = [];
-        while(this.txNum < number) {
+        let cancellationToken = new CancellationToken();
+
+        while((this.txNum < number) && !cancellationToken.isCanceled()) {
             // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
             await this.setImmediatePromise(() => {
-                promises.push(cb.run().then((result) => {
+                promises.push(cb.run(cancellationToken).then((result) => {
                     this.addResult(result);
                     return Promise.resolve();
                 }));
             });
-            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats);
+            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
+        }
+
+        if (cancellationToken.isCanceled()) {
+            Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
         await Promise.all(promises);
@@ -270,17 +315,57 @@ class CaliperLocalClient {
         this.startTime = Date.now();
 
         let promises = [];
-        while ((Date.now() - this.startTime)/1000 < duration) {
+        let cancellationToken = new CancellationToken();
+
+        while (((Date.now() - this.startTime)/1000 < duration) && !cancellationToken.isCanceled()) {
             // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
             await this.setImmediatePromise(() => {
-                promises.push(cb.run().then((result) => {
+                promises.push(cb.run(cancellationToken).then((result) => {
                     this.addResult(result);
                     return Promise.resolve();
                 }));
             });
-            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats);
+            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
+        }
+
+        if (cancellationToken.isCanceled()) {
+            Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
+        }
+
+        await Promise.all(promises);
+        this.endTime = Date.now();
+    }
+
+    /**
+     * Perform test with specified test duration
+     * @param {Object} cb callback module
+     * @param {Object} rateController rate controller object
+     * @async
+     */
+    async runConditional(cb, rateController) {
+        Logger.info('Info: client ' + this.clientIndex +  ' start test runConditional()' + (cb.info ? (':' + cb.info) : ''));
+        this.startTime = Date.now();
+
+        let promises = [];
+        let cancellationToken = new CancellationToken();
+
+        while (!cancellationToken.isCanceled()) {
+            // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
+            // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
+            // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
+            await this.setImmediatePromise(() => {
+                promises.push(cb.run(cancellationToken).then((result) => {
+                    this.addResult(result);
+                    return Promise.resolve();
+                }));
+            });
+            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
+        }
+
+        if (cancellationToken.isCanceled()) {
+            Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
         await Promise.all(promises);
@@ -389,9 +474,11 @@ class CaliperLocalClient {
             if (test.txDuration) {
                 const duration = test.txDuration; // duration in seconds
                 await this.runDuration(cb, duration, rateController);
-            } else {
+            } else if (test.numb) {
                 const number = test.numb;
                 await this.runFixedNumber(cb, number, rateController);
+            } else {
+                await this.runConditional(cb, rateController);
             }
 
             // Clean up
