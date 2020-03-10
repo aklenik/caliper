@@ -139,6 +139,15 @@ class RoundOrchestrator {
         // validate each round before starting any
         rounds.forEach((round, index) => RoundOrchestrator._validateRoundConfig(round, index));
 
+        let workloadModules = rounds.map(r => CaliperUtils.resolvePath(r.callback));
+        let workerParameters = {};
+        for (let workloadModule of workloadModules) {
+            let wm = require(workloadModule);
+            if (wm.prepareWorkerParameters && typeof wm.prepareWorkerParameters === 'function') {
+                workerParameters =  await wm.prepareWorkerParameters(workerParameters);
+            }
+        }
+
         // create messages for workers from each round config
         let roundConfigs = rounds.map((round, index) => {
             let config = {
@@ -148,6 +157,7 @@ class RoundOrchestrator {
                 args: round.arguments,
                 cb: round.callback,
                 testRound: index,
+                workerParameters: workerParameters,
                 pushUrl: this.monitorOrchestrator.hasMonitor('prometheus') ? this.monitorOrchestrator.getMonitor('prometheus').getPushGatewayURL() : null
             };
 

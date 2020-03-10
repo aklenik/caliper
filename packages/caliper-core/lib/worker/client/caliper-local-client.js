@@ -426,7 +426,7 @@ class CaliperLocalClient {
 
             // Run init phase of callback
             Logger.info(`Info: client ${this.clientIndex} prepare test ${(cb.info ? (':' + cb.info + 'phase starting...') : 'phase starting...')}`);
-            await cb.init(this.blockchain, this.context, test.args);
+            await cb.init(this.blockchain, this.context, test.args, test.workerParameters);
             await CaliperUtils.sleep(this.txUpdateTime);
         } catch (err) {
             Logger.info(`Client[${this.clientIndex}] encountered an error during prepare test phase: ${(err.stack ? err.stack : err)}`);

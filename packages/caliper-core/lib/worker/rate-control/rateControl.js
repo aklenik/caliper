@@ -13,18 +13,19 @@
 */
 'use strict';
 
+const path = require('path');
 const CaliperUtils = require('../../common/utils/caliper-utils');
 const logger = CaliperUtils.getLogger('rateControl.js');
 
 const builtInControllers = new Map([
-    ['fixed-rate', './fixedRate.js'],
-    ['fixed-backlog', './fixedBacklog.js'],
-    ['composite-rate', './compositeRate.js'],
-    ['zero-rate', './noRate.js'],
-    ['record-rate', './recordRate.js'],
-    ['replay-rate', './replayRate.js'],
-    ['linear-rate', './linearRate.js'],
-    ['fixed-feedback-rate', './fixedFeedbackRate.js']
+    ['fixed-rate', path.join(__dirname, './fixedRate.js')],
+    ['fixed-backlog', path.join(__dirname, './fixedBacklog.js')],
+    ['composite-rate', path.join(__dirname, './compositeRate.js')],
+    ['zero-rate', path.join(__dirname, './noRate.js')],
+    ['record-rate', path.join(__dirname, './recordRate.js')],
+    ['replay-rate', path.join(__dirname, './replayRate.js')],
+    ['linear-rate', path.join(__dirname, './linearRate.js')],
+    ['fixed-feedback-rate', path.join(__dirname, './fixedFeedbackRate.js')]
 ]);
 
 const RateControl = class {
@@ -37,16 +38,7 @@ const RateControl = class {
      */
     constructor(rateControl, clientIdx, roundIdx) {
         logger.debug(`Creating rate controller for client#${clientIdx} for round#${roundIdx}`, rateControl);
-
-        // resolve the type to a module path
-        let modulePath = builtInControllers.has(rateControl.type)
-            ? builtInControllers.get(rateControl.type) : CaliperUtils.resolvePath(rateControl.type);
-
-        let factoryFunction = require(modulePath).createRateController;
-        if (!factoryFunction) {
-            throw new Error(`${rateControl.type} does not export the mandatory factory function`);
-        }
-
+        let factoryFunction = CaliperUtils.loadModuleFunction(builtInControllers, rateControl.type, 'createRateController');
         this.controller = factoryFunction(rateControl.opts, clientIdx, roundIdx);
     }
 
