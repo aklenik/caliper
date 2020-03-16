@@ -79,7 +79,8 @@ class CaliperLocalClient {
 
         // Internal stats
         this.results      = [];
-        this.txNum        = 0;
+        this.txSubmitted  = 0;
+        this.txFinished = 0;
         this.txLastNum    = 0;
         this.resultStats  = [];
         this.trimType = 0;
@@ -103,7 +104,7 @@ class CaliperLocalClient {
      * Calculate real-time transaction statistics and send the txUpdated message
      */
     txUpdate() {
-        let newNum = this.txNum - this.txLastNum;
+        let newNum = this.txSubmitted - this.txLastNum;
         this.txLastNum += newNum;
 
         // get a copy to work from
@@ -138,7 +139,7 @@ class CaliperLocalClient {
             this.totalTxnFailure += newStats.fail;
             this.prometheusClient.push('caliper_txn_success', this.totalTxnSuccess);
             this.prometheusClient.push('caliper_txn_failure', this.totalTxnFailure);
-            this.prometheusClient.push('caliper_txn_pending', (this.txNum - (this.totalTxnSuccess + this.totalTxnFailure)));
+            this.prometheusClient.push('caliper_txn_pending', (this.txSubmitted - (this.totalTxnSuccess + this.totalTxnFailure)));
         } else {
             // client-orchestrator based update
             // send(to, type, data)
@@ -180,7 +181,8 @@ class CaliperLocalClient {
         // Reset txn counters
         this.results  = [];
         this.resultStats = [];
-        this.txNum = 0;
+        this.txSubmitted = 0;
+        this.txFinished = 0;
         this.txLastNum = 0;
 
         if (this.prometheusClient.gatewaySet()) {
@@ -203,10 +205,12 @@ class CaliperLocalClient {
      */
     addResult(result) {
         if (Array.isArray(result)) { // contain multiple results
+            this.txFinished += result.length;
             for(let i = 0 ; i < result.length ; i++) {
                 this.results.push(result[i]);
             }
         } else {
+            this.txFinished += 1;
             this.results.push(result);
         }
     }
@@ -223,8 +227,10 @@ class CaliperLocalClient {
         if (msg.trim) {
             if (msg.txDuration) {
                 this.trimType = 1;
-            } else {
+            } else if (msg.numb) {
                 this.trimType = 2;
+            } else {
+                this.trimType = 0;
             }
             this.trim = msg.trim;
         } else {
@@ -251,7 +257,7 @@ class CaliperLocalClient {
      * @param {Number} count count of new submitted transaction(s)
      */
     submitCallback(count) {
-        this.txNum += count;
+        this.txSubmitted += count;
     }
 
     /**
@@ -279,18 +285,17 @@ class CaliperLocalClient {
         Logger.info('Info: client ' + this.clientIndex +  ' start test runFixedNumber()' + (cb.info ? (':' + cb.info) : ''));
         this.startTime = Date.now();
 
-        let promises = [];
         let cancellationToken = new CancellationToken();
 
-        while((this.txNum < number) && !cancellationToken.isCanceled()) {
+        while((this.txSubmitted < number) && !cancellationToken.isCanceled()) {
             // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
             await this.setImmediatePromise(() => {
-                promises.push(cb.run(cancellationToken).then((result) => {
+                cb.run(cancellationToken).then((result) => {
                     this.addResult(result);
                     return Promise.resolve();
-                }));
+                });
             });
             await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
         }
@@ -299,7 +304,10 @@ class CaliperLocalClient {
             Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
-        await Promise.all(promises);
+        while (this.txSubmitted > this.txFinished) {
+            await CaliperUtils.sleep(500);
+        }
+
         this.endTime = Date.now();
     }
 
@@ -314,7 +322,6 @@ class CaliperLocalClient {
         Logger.info('Info: client ' + this.clientIndex +  ' start test runDuration()' + (cb.info ? (':' + cb.info) : ''));
         this.startTime = Date.now();
 
-        let promises = [];
         let cancellationToken = new CancellationToken();
 
         while (((Date.now() - this.startTime)/1000 < duration) && !cancellationToken.isCanceled()) {
@@ -322,10 +329,10 @@ class CaliperLocalClient {
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
             await this.setImmediatePromise(() => {
-                promises.push(cb.run(cancellationToken).then((result) => {
+                cb.run(cancellationToken).then((result) => {
                     this.addResult(result);
                     return Promise.resolve();
-                }));
+                });
             });
             await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
         }
@@ -334,7 +341,10 @@ class CaliperLocalClient {
             Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
-        await Promise.all(promises);
+        while (this.txSubmitted > this.txFinished) {
+            await CaliperUtils.sleep(500);
+        }
+
         this.endTime = Date.now();
     }
 
@@ -348,7 +358,6 @@ class CaliperLocalClient {
         Logger.info('Info: client ' + this.clientIndex +  ' start test runConditional()' + (cb.info ? (':' + cb.info) : ''));
         this.startTime = Date.now();
 
-        let promises = [];
         let cancellationToken = new CancellationToken();
 
         while (!cancellationToken.isCanceled()) {
@@ -356,10 +365,10 @@ class CaliperLocalClient {
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
             await this.setImmediatePromise(() => {
-                promises.push(cb.run(cancellationToken).then((result) => {
+                cb.run(cancellationToken).then((result) => {
                     this.addResult(result);
                     return Promise.resolve();
-                }));
+                });
             });
             await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
         }
@@ -368,7 +377,10 @@ class CaliperLocalClient {
             Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
-        await Promise.all(promises);
+        while (this.txSubmitted > this.txFinished) {
+            await CaliperUtils.sleep(500);
+        }
+
         this.endTime = Date.now();
     }
 
@@ -426,7 +438,7 @@ class CaliperLocalClient {
 
             // Run init phase of callback
             Logger.info(`Info: client ${this.clientIndex} prepare test ${(cb.info ? (':' + cb.info + 'phase starting...') : 'phase starting...')}`);
-            await cb.init(this.blockchain, this.context, test.args, test.workerParameters);
+            await cb.init(this.blockchain, this.context, test.args, test.workerParameters, this.clientIndex, test.totalClients);
             await CaliperUtils.sleep(this.txUpdateTime);
         } catch (err) {
             Logger.info(`Client[${this.clientIndex}] encountered an error during prepare test phase: ${(err.stack ? err.stack : err)}`);
