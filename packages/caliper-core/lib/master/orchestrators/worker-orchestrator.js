@@ -259,24 +259,7 @@ class WorkerOrchestrator {
 
     }
 
-    /**
-    * Prepare the test
-    * message = {
-    *              type: 'test',
-    *              label : label name,
-    *              numb:   total number of simulated txs,
-    *              txDuration: time duration of test,
-    *              rateControl: rate controller to use,
-    *              trim:   trim options,
-    *              args:   user defined arguments,
-    *              cb  :   path of the callback js file,
-    *              config: path of the blockchain config file
-    *            };
-    * @param {JSON} test test specification
-    * @async
-    */
-    async prepareTestRound(test) {
-
+    async prepareWorkers() {
         // conditionally launch workers - they might exist in containers and not launched as processes
         if (!this.workersRemote && !this.workersLaunched) {
             for (let number = 1 ; number <= this.number ; number++) {
@@ -370,14 +353,36 @@ class WorkerOrchestrator {
         } else {
             logger.info(`Existing ${Object.keys(this.workers).length} prepared workers detected, progressing to test preparation phase.`);
         }
+    }
 
+    /**
+    * Prepare the test
+    * message = {
+    *              type: 'test',
+    *              label : label name,
+    *              numb:   total number of simulated txs,
+    *              txDuration: time duration of test,
+    *              rateControl: rate controller to use,
+    *              trim:   trim options,
+    *              args:   user defined arguments,
+    *              cb  :   path of the callback js file,
+    *              config: path of the blockchain config file
+     *             requiredWorkers
+    *            };
+    * @param {JSON} test test specification
+    * @async
+    */
+    async prepareTestRound(test) {
         // Work with a cloned message as we need to transform the passed message
         const prepSpec = JSON.parse(JSON.stringify(test));
+        const requiredWorkers = test.requiredWorkers;
 
-        // send test preparation specification to each worker
+        const workers = Object.keys(this.workers).filter(key => this.workers[key].workerId < requiredWorkers);
+
+        // send test preparation specification to each required worker
         let preparePromises = [];
-        for (let index in this.workers) {
-            let worker = this.workers[index];
+        for (let key of workers) {
+            let worker = this.workers[key];
             let p = new Promise((resolve, reject) => {
                 worker.phases[TYPES.PREPARED] = {
                     resolve: resolve,
@@ -386,18 +391,19 @@ class WorkerOrchestrator {
             });
             preparePromises.push(p);
             prepSpec.clientArgs = this.workerArguments[worker.workerId];
-            prepSpec.totalClients = this.number;
+            // lie about the total number of workers
+            prepSpec.totalClients = requiredWorkers;
 
             // Send to worker
-            this.messenger.send([index], TYPES.PREPARE, prepSpec);
+            this.messenger.send([key], TYPES.PREPARE, prepSpec);
         }
 
         await Promise.all(preparePromises);
         logger.info(`${this.number} workers prepared, progressing to test phase.`);
 
         // clear worker prepare promises so they can be reused
-        for (let worker in this.workers) {
-            this.workers[worker].phases[TYPES.PREPARED] = {};
+        for (let key of workers) {
+            this.workers[key].phases[TYPES.PREPARED] = {};
         }
     }
 
@@ -434,15 +440,15 @@ class WorkerOrchestrator {
      * @async
      */
     async _startTest(testSpecification) {
-
+        const requiredWorkers = testSpecification.requiredWorkers;
         let txPerWorker;
         if (testSpecification.numb) {
             // Run specified number of transactions
-            txPerWorker  = Math.floor(testSpecification.numb / this.number);
+            txPerWorker  = Math.floor(testSpecification.numb / requiredWorkers);
 
             // trim should be based on number of workers, if specified with txNumber
             if (testSpecification.trim) {
-                testSpecification.trim = Math.floor(testSpecification.trim / this.number);
+                testSpecification.trim = Math.floor(testSpecification.trim / requiredWorkers);
             }
 
             if (txPerWorker < 1) {
@@ -461,9 +467,11 @@ class WorkerOrchestrator {
         // Ensure results are reset
         this.results = [];
 
+        const workers = Object.keys(this.workers).filter(key => this.workers[key].workerId < requiredWorkers);
+
         let testPromises = [];
-        for (let index in this.workers) {
-            let worker = this.workers[index];
+        for (let key of workers) {
+            let worker = this.workers[key];
             let p = new Promise((resolve, reject) => {
                 worker.phases[TYPES.TESTRESULT] = {
                     resolve: resolve,
@@ -474,16 +482,16 @@ class WorkerOrchestrator {
             worker.results = this.results;
             worker.updates = this.updates.data;
             testSpecification.clientArgs = this.workerArguments[worker.workerId];
-            testSpecification.totalClients = this.number;
+            testSpecification.totalClients = requiredWorkers;
 
             // Publish to worker
-            this.messenger.send([index], TYPES.TEST, testSpecification);
+            this.messenger.send([key], TYPES.TEST, testSpecification);
         }
 
         await Promise.all(testPromises);
         // clear worker test promises so they can be reused
-        for (let worker in this.workers) {
-            this.workers[worker].phases[TYPES.TESTRESULT] = {};
+        for (let key of workers) {
+            this.workers[key].phases[TYPES.TESTRESULT] = {};
         }
     }
 

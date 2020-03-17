@@ -157,6 +157,7 @@ class RoundOrchestrator {
                 args: round.arguments,
                 cb: round.callback,
                 testRound: index,
+                requiredWorkers: round.requiredWorkers,
                 workerParameters: workerParameters,
                 pushUrl: this.monitorOrchestrator.hasMonitor('prometheus') ? this.monitorOrchestrator.getMonitor('prometheus').getPushGatewayURL() : null
             };
@@ -182,6 +183,8 @@ class RoundOrchestrator {
         } catch (err) {
             logger.error(`Could not start monitors: ${err.stack || err}`);
         }
+
+        await this.workerOrchestrator.prepareWorkers();
 
         let benchStartTime = Date.now();
 
