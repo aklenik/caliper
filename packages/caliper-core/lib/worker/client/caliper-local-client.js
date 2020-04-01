@@ -297,7 +297,7 @@ class CaliperLocalClient {
                     return Promise.resolve();
                 });
             });
-            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
+            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
         }
 
         if (cancellationToken.isCanceled()) {
@@ -334,7 +334,7 @@ class CaliperLocalClient {
                     return Promise.resolve();
                 });
             });
-            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
+            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
         }
 
         if (cancellationToken.isCanceled()) {
@@ -370,7 +370,7 @@ class CaliperLocalClient {
                     return Promise.resolve();
                 });
             });
-            await rateController.applyRateControl(this.startTime, this.txNum, this.results, this.resultStats, cancellationToken);
+            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
         }
 
         if (cancellationToken.isCanceled()) {
