@@ -304,6 +304,8 @@ class CaliperLocalClient {
             Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
+        await CaliperUtils.sleep(120*1000);
+
         while (this.txSubmitted > this.txFinished) {
             await CaliperUtils.sleep(500);
         }
@@ -341,6 +343,8 @@ class CaliperLocalClient {
             Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
 
+        await CaliperUtils.sleep(120*1000);
+
         while (this.txSubmitted > this.txFinished) {
             await CaliperUtils.sleep(500);
         }
@@ -376,6 +380,8 @@ class CaliperLocalClient {
         if (cancellationToken.isCanceled()) {
             Logger.info(`Round cancelled with reason: ${cancellationToken.getReason() || '-'}`);
         }
+
+        await CaliperUtils.sleep(120*1000);
 
         while (this.txSubmitted > this.txFinished) {
             await CaliperUtils.sleep(500);
