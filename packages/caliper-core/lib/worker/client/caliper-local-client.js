@@ -288,6 +288,7 @@ class CaliperLocalClient {
         let cancellationToken = new CancellationToken();
 
         while((this.txSubmitted < number) && !cancellationToken.isCanceled()) {
+            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
             // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
@@ -297,7 +298,6 @@ class CaliperLocalClient {
                     return Promise.resolve();
                 });
             });
-            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
         }
 
         if (cancellationToken.isCanceled()) {
@@ -327,6 +327,7 @@ class CaliperLocalClient {
         let cancellationToken = new CancellationToken();
 
         while (((Date.now() - this.startTime)/1000 < duration) && !cancellationToken.isCanceled()) {
+            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
             // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
@@ -336,7 +337,6 @@ class CaliperLocalClient {
                     return Promise.resolve();
                 });
             });
-            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
         }
 
         if (cancellationToken.isCanceled()) {
@@ -365,6 +365,7 @@ class CaliperLocalClient {
         let cancellationToken = new CancellationToken();
 
         while (!cancellationToken.isCanceled()) {
+            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
             // If this function calls cb.run() too quickly, micro task queue will be filled with unexecuted promises,
             // and I/O task(s) will get no chance to be execute and fall into starvation, for more detail info please visit:
             // https://snyk.io/blog/nodejs-how-even-quick-async-functions-can-block-the-event-loop-starve-io/
@@ -374,7 +375,6 @@ class CaliperLocalClient {
                     return Promise.resolve();
                 });
             });
-            await rateController.applyRateControl(this.startTime, this.txSubmitted, this.results, this.resultStats, cancellationToken);
         }
 
         if (cancellationToken.isCanceled()) {
