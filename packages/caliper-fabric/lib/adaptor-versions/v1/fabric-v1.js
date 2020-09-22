@@ -373,10 +373,11 @@ class Fabric extends BlockchainInterface {
                 });
             }, this._getRemainingTimeout(startTime, timeout));
 
-            eventSource.eventHub.registerTxEvent(txId, (tx, code) => {
+            eventSource.eventHub.registerTxEvent(txId, (tx, code, blockNumber) => {
                 clearTimeout(handle);
                 let time = Date.now();
                 eventSource.eventHub.unregisterTxEvent(txId);
+                invokeStatus.Set('block_number', blockNumber.toString());
 
                 // either explicit invalid event or valid event, verified in both cases by at least one peer
                 // TODO: what about when a transient error occurred on a peer?
