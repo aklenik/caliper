@@ -20,6 +20,7 @@ module.exports.CaliperWorker = require('./lib/worker/caliper-worker');
 module.exports.Constants = require('./lib/common/utils/constants');
 module.exports.TxStatus = require('./lib/common/core/transaction-status');
 module.exports.CaliperUtils = require('./lib/common/utils/caliper-utils');
+module.exports.CaliperLogging = require('./lib/common/logging/caliper-logging');
 module.exports.Version = require('./lib/common/utils/version');
 module.exports.ConfigUtil = require('./lib/common/config/config-util');
 module.exports.WorkerMessageHandler = require('./lib/worker/worker-message-handler');

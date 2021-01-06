@@ -109,6 +109,10 @@ caliper:
             align: true
             # specifies formatting strings for different log message attributes
             attributeformat:
+                # remains as-is
+                timestamp:
+                # remains as-is
+                message:
                 # add a space before the level
                 level: ' %attribute%'
                 # put [] around the label and space before it
@@ -119,11 +123,21 @@ caliper:
                 metadata: ' (%attribute%)'
             # defines coloring for the different levels for each (or all) message property
             colorize:
-                # Apply it to levels
+                # Color all attributes
+                all: false
+                # Color "timestamp" attribute
+                timestamp: false
+                # Color "label" attribute
+                label: false
+                # Color "level" attribute
                 level: true
-                # Apply it to messages
+                # Color "module" attribute
+                module: false
+                # Color "message" attribute
                 message: false
-                # The colors for each level
+                # Color "metadata" attribute
+                metadata: false
+                # The colors for each logging level
                 colors:
                     info: green
                     error: red

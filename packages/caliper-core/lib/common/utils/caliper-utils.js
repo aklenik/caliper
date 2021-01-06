@@ -14,7 +14,7 @@
 
 'use strict';
 
-const loggingUtil = require('./logging-util.js');
+const Logging = require('../logging/caliper-logging');
 const Config = require('../config/config-util');
 
 const {exec, spawn} = require('child_process');
@@ -227,12 +227,12 @@ class CaliperUtils {
     /**
      * Returns a logger configured with the given module name.
      * @param {string} name The name of module who will use the logger.
-     * @returns {Logger} The configured logger instance.
+     * @returns {LoggerInterface} The configured logger instance.
+     * @deprecated
      */
     static getLogger(name) {
-        // logger should be accessed through the Util class
-        // but delegates to logging-util.js
-        return loggingUtil.getLogger(name);
+        // TODO: deprecate this path in the next breaking release
+        return Logging.createModuleLogger(name);
     }
 
     /**
