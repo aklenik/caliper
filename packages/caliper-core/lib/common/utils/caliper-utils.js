@@ -232,7 +232,7 @@ class CaliperUtils {
      */
     static getLogger(name) {
         // TODO: deprecate this path in the next breaking release
-        return Logging.createModuleLogger(name);
+        return Logging.createLogger(name);
     }
 
     /**

@@ -16,7 +16,7 @@
 
 const Config = require('../../config/config-util');
 
-const DefaultColorizeAttribute = false;
+const DefaultColorize = false;
 
 /**
  * Class representing the options for the colorize winston format.
@@ -26,14 +26,14 @@ class ColorizeOptions {
      * Initializes a new instance.
      */
     constructor() {
-        this.colorizeAll = DefaultColorizeAttribute;
+        this.colorizeAll = DefaultColorize;
         this.colorizeAttribute = {
-            timestamp: DefaultColorizeAttribute,
-            label: DefaultColorizeAttribute,
+            timestamp: DefaultColorize,
+            label: DefaultColorize,
             level: true,
-            module: DefaultColorizeAttribute,
-            message: DefaultColorizeAttribute,
-            metadata: DefaultColorizeAttribute,
+            module: DefaultColorize,
+            message: DefaultColorize,
+            metadata: DefaultColorize,
         };
 
         this.levelColors = {
@@ -50,6 +50,10 @@ class ColorizeOptions {
      * @return {boolean} True, if the attribute should be colorized. Otherwise false.
      */
     shouldColorizeAttribute(attributeName) {
+        if (attributeName === undefined) {
+            return false;
+        }
+
         return this.colorizeAll || !!this.colorizeAttribute[attributeName];
     }
 
@@ -59,6 +63,10 @@ class ColorizeOptions {
      * @return {string[]} The colors to use for the level.
      */
     getColorsForLevel(level) {
+        if (level === undefined) {
+            return [];
+        }
+
         return this.levelColors[level] || [];
     }
 
@@ -67,6 +75,7 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeAll(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAll = shouldColorize;
     }
 
@@ -75,6 +84,7 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeTimestamp(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAttribute.timestamp = shouldColorize;
     }
 
@@ -83,6 +93,7 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeLabel(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAttribute.label = shouldColorize;
     }
 
@@ -91,6 +102,7 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeLevel(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAttribute.level = shouldColorize;
     }
 
@@ -99,6 +111,7 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeModule(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAttribute.module = shouldColorize;
     }
 
@@ -107,6 +120,7 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeMessage(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAttribute.message = shouldColorize;
     }
 
@@ -115,7 +129,23 @@ class ColorizeOptions {
      * @param {boolean} shouldColorize Indicates whether to colorize or not.
      */
     setColorizeMetadata(shouldColorize) {
+        this._assertAttributeShouldColorizeParameter(shouldColorize);
         this.colorizeAttribute.metadata = shouldColorize;
+    }
+
+    /**
+     * Assert that the given parameter value is a boolean value.
+     * @param {boolean} shouldColorize The parameter value.
+     * @private
+     */
+    _assertAttributeShouldColorizeParameter(shouldColorize) {
+        if (shouldColorize === undefined) {
+            throw new Error('The parameter "shouldColorize" is undefined');
+        }
+
+        if (typeof shouldColorize !== 'boolean') {
+            throw new Error('The parameter "shouldColorize" is not a boolean value');
+        }
     }
 
     /**
@@ -123,6 +153,7 @@ class ColorizeOptions {
      * @param {string[]} colors The array of colors to use.
      */
     setInfoLevelColors(colors) {
+        this._assertLevelColorsParameter(colors);
         this.levelColors.info = colors;
     }
 
@@ -131,6 +162,7 @@ class ColorizeOptions {
      * @param {string[]} colors The array of colors to use.
      */
     setErrorLevelColors(colors) {
+        this._assertLevelColorsParameter(colors);
         this.levelColors.error = colors;
     }
 
@@ -139,6 +171,7 @@ class ColorizeOptions {
      * @param {string[]} colors The array of colors to use.
      */
     setWarningLevelColors(colors) {
+        this._assertLevelColorsParameter(colors);
         this.levelColors.warn = colors;
     }
 
@@ -147,7 +180,27 @@ class ColorizeOptions {
      * @param {string[]} colors The array of colors to use.
      */
     setDebugLevelColors(colors) {
+        this._assertLevelColorsParameter(colors);
         this.levelColors.debug = colors;
+    }
+
+    /**
+     * Assert that the given parameter value is a string array.
+     * @param {string[]} colors The parameter value.
+     * @private
+     */
+    _assertLevelColorsParameter(colors) {
+        if (colors === undefined) {
+            throw new Error('The parameter "colors" is undefined');
+        }
+
+        if (Array.isArray(colors)) {
+            throw new Error('The parameter "colors" is not an array');
+        }
+
+        if (colors.some(value => typeof value !== 'string')) {
+            throw new Error('The parameter "colors" array contains non-string entries');
+        }
     }
 
     /**
@@ -158,18 +211,23 @@ class ColorizeOptions {
         const keys = Config.keys.Logging.Formats.Colorize;
         const options = new ColorizeOptions();
 
-        options.setColorizeAll(Config.get(keys.All));
-        options.setColorizeTimestamp(Config.get(keys.Timestamp));
-        options.setColorizeLabel(Config.get(keys.Label));
-        options.setColorizeLevel(Config.get(keys.Level));
-        options.setColorizeModule(Config.get(keys.Module));
-        options.setColorizeMessage(Config.get(keys.Message));
-        options.setColorizeMetadata(Config.get(keys.Metadata));
+        options.setColorizeAll(Config.get(keys.All, DefaultColorize));
+        options.setColorizeTimestamp(Config.get(keys.Timestamp, DefaultColorize));
+        options.setColorizeLabel(Config.get(keys.Label, DefaultColorize));
+        options.setColorizeLevel(Config.get(keys.Level, true));
+        options.setColorizeModule(Config.get(keys.Module, DefaultColorize));
+        options.setColorizeMessage(Config.get(keys.Message, DefaultColorize));
+        options.setColorizeMetadata(Config.get(keys.Metadata, DefaultColorize));
 
-        options.setInfoLevelColors(Config.get(keys.Colors.Info).split(' '));
-        options.setErrorLevelColors(Config.get(keys.Colors.Error).split(' '));
-        options.setWarningLevelColors(Config.get(keys.Colors.Warn).split(' '));
-        options.setDebugLevelColors(Config.get(keys.Colors.Debug).split(' '));
+        const infoLevelColors = Config.get(keys.Colors.Info, 'green');
+        const errorLevelColors = Config.get(keys.Colors.Error, 'red');
+        const warningLevelColors = Config.get(keys.Colors.Warn, 'yellow');
+        const debugLevelColors = Config.get(keys.Colors.Debug, 'grey');
+
+        options.setInfoLevelColors(infoLevelColors.split(' '));
+        options.setErrorLevelColors(errorLevelColors.split(' '));
+        options.setWarningLevelColors(warningLevelColors.split(' '));
+        options.setDebugLevelColors(debugLevelColors.split(' '));
 
         return options;
     }

@@ -86,7 +86,7 @@ class WinstonLoggerAdapter extends LoggerInterface {
      * @param {object[]} formats Winston formats to use during logging. Defaults to the configured formats.
      * @param {object[]} transports Winston transports to use during logging. Defaults to the configured formats.
      */
-    configureWinstonLogger(formats = undefined, transports = undefined) {
+    configure(formats = undefined, transports = undefined) {
         const finalTransports = transports || this._loadConfiguredTransports();
         const finalFormats = formats || this._loadConfiguredFormats(finalTransports);
 
@@ -103,7 +103,7 @@ class WinstonLoggerAdapter extends LoggerInterface {
      * @param {string} moduleName The module name the child logger should add as metadata.
      * @return {WinstonLoggerAdapter} The child logger.
      */
-    createChildWinstonLogger(moduleName) {
+    createChildLogger(moduleName) {
         return new WinstonLoggerAdapter(
             this.winstonLogger.child({ module: moduleName })
         );

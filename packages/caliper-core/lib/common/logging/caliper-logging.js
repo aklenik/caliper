@@ -17,23 +17,23 @@
 const WinstonLoggerAdapter = require('./loggers/winston-logger-adapter');
 
 /**
- * Singleton class for creating Winston-based Caliper loggers.
+ * The singleton root winston logger for creating module loggers.
+ * @type {WinstonLoggerAdapter}
  */
-class CaliperLogging {
-    /**
-     * Create a module-scoped Caliper logger.
-     * @param {string} moduleName The name of the module.
-     * @return {LoggerInterface} The module logger.
-     */
-    createModuleLogger(moduleName) {
-        if (!this.rootWinstonLogger) {
-            this.rootWinstonLogger = new WinstonLoggerAdapter();
-            this.rootWinstonLogger.configureWinstonLogger();
-        }
+let RootLogger = undefined;
 
-        return this.rootWinstonLogger.createChildWinstonLogger(moduleName);
+/**
+ * Create a module-scoped Caliper logger.
+ * @param {string} moduleName The name of the module.
+ * @return {LoggerInterface} The module-scoped logger.
+ */
+function createLogger(moduleName) {
+    if (!RootLogger) {
+        RootLogger = new WinstonLoggerAdapter();
+        RootLogger.configure();
     }
+
+    return RootLogger.createChildLogger(moduleName);
 }
 
-// singleton instance using Node.JS module caching
-module.exports = new CaliperLogging();
+module.exports.createLogger = createLogger;
