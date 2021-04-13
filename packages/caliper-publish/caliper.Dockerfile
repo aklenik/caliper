@@ -36,7 +36,7 @@ ENV PATH /home/node/.npm-global/bin:$PATH
 ENV CALIPER_WORKSPACE /hyperledger/caliper/workspace
 ENV CALIPER_BIND_ARGS -g
 
-RUN caliper bind --caliper-bind-sut fabric:1.4.14
+RUN caliper bind --caliper-bind-sut fabric:1.4.17
 
 ENTRYPOINT ["caliper"]
 CMD ["--version"]

@@ -20,6 +20,24 @@ const Logger = CaliperUtils.getLogger('adapters/fabric');
 const semver = require('semver');
 const path = require('path');
 
+/**
+ * @returns {string} version
+ */
+const _determineInstalledNodeSDKVersion = () => {
+    let version;
+    if (CaliperUtils.moduleIsInstalled('fabric-network')) {
+        const packageVersion = require('fabric-network/package').version;
+        version = semver.coerce(packageVersion);
+    } else if (CaliperUtils.moduleIsInstalled('fabric-client')) {
+        const packageVersion = require('fabric-client/package').version;
+        version = semver.coerce(packageVersion);
+    } else {
+        const msg = 'Unable to detect required Fabric binding packages';
+        throw new Error(msg);
+    }
+    return version;
+};
+
 const Fabric = class extends BlockchainInterface {
 
     /**
@@ -29,7 +47,7 @@ const Fabric = class extends BlockchainInterface {
     constructor(workerIndex) {
         super();
         // Switch adaptors on the fabric-ca-client, which is a common package across all fabric-sdk-node releases
-        const packageVersion = require('fabric-ca-client/package').version;
+        const packageVersion = _determineInstalledNodeSDKVersion();
         const version = semver.coerce(packageVersion);
         const useGateway = ConfigUtil.get(ConfigUtil.keys.Fabric.Gateway.UseGateway, false);
 
