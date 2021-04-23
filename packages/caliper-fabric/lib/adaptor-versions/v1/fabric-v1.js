@@ -1561,7 +1561,8 @@ class Fabric extends BlockchainInterface {
             fcn: querySettings.chaincodeFunction,
             args: querySettings.chaincodeArguments || [],
             transientMap: querySettings.transientMap,
-            targets: targetPeers
+            targets: targetPeers,
+            txId: txIdObject
         };
 
         // the exception should propagate up for an invalid channel name, indicating a user callback module error
