@@ -38,7 +38,7 @@ const RateControl = class {
      */
     constructor(rateControl, clientIdx, roundIdx) {
         logger.debug(`Creating rate controller for client#${clientIdx} for round#${roundIdx}`, rateControl);
-        let factoryFunction = CaliperUtils.loadModuleFunction(builtInControllers, rateControl.type, 'createRateController');
+        let factoryFunction = CaliperUtils.loadModuleFunction(builtInControllers, rateControl.type, 'createRateController', module, require);
         this.controller = factoryFunction(rateControl.opts, clientIdx, roundIdx);
     }
 

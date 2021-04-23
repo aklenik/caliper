@@ -37,7 +37,7 @@ const Messenger = class {
         Logger.info(`Creating messenger of type "${configuration.type}" ${configuration.sut ? ` for SUT ${configuration.sut}` : ''}`);
 
         // resolve the type to a module's factory function
-        let factoryFunction = CaliperUtils.loadModuleFunction(builtInMessengers, configuration.type, 'createMessenger');
+        let factoryFunction = CaliperUtils.loadModuleFunction(builtInMessengers, configuration.type, 'createMessenger', module, require);
         this.messenger = factoryFunction(configuration);
     }
 

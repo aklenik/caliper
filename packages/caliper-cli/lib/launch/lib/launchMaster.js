@@ -56,7 +56,7 @@ class LaunchMaster {
             logger.info(`Set SUT type: ${bindingSpec || sutType}`);
 
             let adapterFactory = CaliperUtils.loadModuleFunction(CaliperUtils.getBuiltinAdapterPackageNames(),
-                sutType, 'AdapterFactory', require);
+                sutType, 'AdapterFactory', module, require);
 
             const engine = new CaliperEngine(benchmarkConfig, networkConfig, adapterFactory);
             const response = await engine.run();

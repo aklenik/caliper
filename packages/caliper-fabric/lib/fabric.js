@@ -25,11 +25,11 @@ const path = require('path');
  */
 const _determineInstalledNodeSDKVersion = () => {
     let version;
-    if (CaliperUtils.moduleIsInstalled('fabric-network')) {
-        const packageVersion = require('fabric-network/package').version;
-        version = semver.coerce(packageVersion);
-    } else if (CaliperUtils.moduleIsInstalled('fabric-client')) {
+    if (CaliperUtils.moduleIsInstalled('fabric-client', module, require)) {
         const packageVersion = require('fabric-client/package').version;
+        version = semver.coerce(packageVersion);
+    } else if (CaliperUtils.moduleIsInstalled('fabric-network', module, require)) {
+        const packageVersion = require('fabric-network/package').version;
         version = semver.coerce(packageVersion);
     } else {
         const msg = 'Unable to detect required Fabric binding packages';

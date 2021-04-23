@@ -69,7 +69,7 @@ class LaunchWorker {
         }
 
         let adapterFactory = CaliperUtils.loadModuleFunction(CaliperUtils.getBuiltinAdapterPackageNames(),
-            sutType, 'AdapterFactory', require);
+            sutType, 'AdapterFactory', module, require);
 
         // Create the message client using the specified type
         const type = `${messagingMethod}-worker`;

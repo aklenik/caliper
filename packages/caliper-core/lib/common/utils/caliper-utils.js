@@ -30,10 +30,11 @@ class CaliperUtils {
     /**
      * Check if a named module is installed and accessible by caliper
      * @param {string} moduleName the name of the module to check
+     * @param {object} callingModule The calling module
      * @param {Function} requireFunction The "require" function (with appropriate scoping) to use to load the module.
      * @returns {boolean} boolean value for existence of accessible package
      */
-    static moduleIsInstalled(moduleName, requireFunction = require) {
+    static moduleIsInstalled(moduleName, callingModule, requireFunction = require) {
         let modulePath;
         if (moduleName.startsWith('./') || moduleName.startsWith('/')) {
             // treat it as an external module, but resolve the path, so it's absolute
@@ -44,7 +45,7 @@ class CaliperUtils {
         }
 
         try {
-            CaliperUtils.loadModule(modulePath, requireFunction);
+            CaliperUtils.loadModule(modulePath, callingModule, requireFunction);
             return true;
         } catch (err) {
 
@@ -124,26 +125,27 @@ class CaliperUtils {
     /**
      * Loads the module at the given path.
      * @param {string} modulePath The path to the module or its name.
+     * @param {object} callingModule The calling module
      * @param {Function} requireFunction The "require" function (with appropriate scoping) to use to load the module.
      * @return {object} The loaded module.
      */
-    static loadModule(modulePath, requireFunction = require) {
+    static loadModule(modulePath, callingModule, requireFunction = require) {
         try {
             return requireFunction(modulePath);
         } catch (err) {
-            throw new Error(`Module "${modulePath}" could not be loaded: ${err}\nSearched paths: ${module.paths}`);
+            throw new Error(`Module "${modulePath}" could not be loaded: ${err}\nSearched paths: ${callingModule.paths}`);
         }
     }
 
     /**
      * Loads the given function from the given module.
-     * @param {object} module The module exporting the function.
+     * @param {object} loadedModule The module exporting the function.
      * @param {string} functionName The name of the function.
      * @param {string} moduleName The name of the module.
      * @return {function} The loaded function.
      */
-    static loadFunction(module, functionName, moduleName) {
-        const func = module[functionName];
+    static loadFunction(loadedModule, functionName, moduleName) {
+        const func = loadedModule[functionName];
         if (!func || typeof func !== 'function') {
             throw new Error(`Function "${functionName}" could not be loaded for module "${moduleName}"`);
         }
@@ -156,10 +158,11 @@ class CaliperUtils {
      * @param {Map<string, string>} builtInModules The mapping of built-in module names to their path.
      * @param {string} moduleName The name of the module.
      * @param {string} functionName The name of the function.
+     * @param {object} callingModule The calling module
      * @param {Function} requireFunction The "require" function (with appropriate scoping) to use to load the module.
      * @return {Function} The loaded function.
      */
-    static loadModuleFunction(builtInModules, moduleName, functionName, requireFunction = require) {
+    static loadModuleFunction(builtInModules, moduleName, functionName, callingModule, requireFunction = require) {
         let modulePath;
 
         // get correct module path
@@ -173,8 +176,8 @@ class CaliperUtils {
             modulePath = moduleName;
         }
 
-        let module = CaliperUtils.loadModule(modulePath, requireFunction);
-        return CaliperUtils.loadFunction(module, functionName, moduleName);
+        let loadedModule = CaliperUtils.loadModule(modulePath, callingModule, requireFunction);
+        return CaliperUtils.loadFunction(loadedModule, functionName, moduleName);
     }
 
     /**
