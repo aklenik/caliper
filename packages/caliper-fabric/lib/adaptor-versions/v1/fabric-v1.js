@@ -363,7 +363,8 @@ class Fabric extends BlockchainInterface {
                 eventSource.eventHub.unregisterTxEvent(txId);
 
                 let time = Date.now();
-                invokeStatus.Set(`commit_timeout_${eventSource.peer}`, 'TIMEOUT');
+                invokeStatus.Set(`commit_timeout_${eventSource.peer}`, time);
+                invokeStatus.Set(`commit_error_${eventSource.peer}`, 'TIMEOUT');
 
                 // resolve the failed transaction with the current time and error message
                 resolve({
