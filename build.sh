@@ -17,8 +17,8 @@
 cd ./packages/caliper-publish/
 ./publish.js verdaccio start
 sleep 5s
-./publish.js npm --registry http://localhost:4873
-./publish.js docker --registry http://localhost:4873 --image klenik/caliper-fabric-1.4.17 --tag experimental
+./publish.js npm --registry http://127.0.0.1:4873
+./publish.js docker --registry http://127.0.0.1:4873 --image klenik/caliper-fabric-1.4.17 --tag experimental
 ./publish.js verdaccio stop
 ./publish.js fix
 

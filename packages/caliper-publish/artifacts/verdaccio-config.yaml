@@ -52,4 +52,4 @@ logs:
   - {type: stdout, format: pretty, level: http}
   #- {type: file, path: verdaccio.log, level: info}
 listen:
- - localhost:4873            # default value
+ - 0.0.0.0:4873            # default value

@@ -23,7 +23,7 @@ module.exports.builder = yargs => {
         bind: {
             alias: 'b',
             demand: false,
-            default: 'localhost:4873',
+            default: '0.0.0.0:4873',
             type: 'string',
             describe: 'The binding endpoint for the Verdaccio process.'
         }
